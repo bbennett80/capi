@@ -1,0 +1,30 @@
+Measured (UTC): 2026-11-12 06:23:28
+Core revision: 2772c5c12677f4ae32d60df7756b91286896c5da
+Runtime version: 0.4.0
+System: Darwin 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:27 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T8103 arm64
+ProductName:		macOS
+ProductVersion:		27.0.1
+BuildVersion:		26A434
+machdep.cpu.brand_string: Apple M1
+hw.memsize: 8589934592
+hw.ncpu: 8
+
+Compiler:
+Apple clang version 21.0.0 (clang-2100.1.1.101)
+Target: arm64-apple-darwin27.0.0
+Thread model: posix
+InstalledDir: /Library/Developer/CommandLineTools/usr/bin
+
+Build: CMake Release (-O3 -DNDEBUG), no sanitizers, native vs forced poll
+Protocol: HTTP/1.1 keep-alive, TCP_NODELAY, one request in flight per connection
+Matrix: 6 workloads x 5 connection levels x 3 repeats x 2 backends
+Measured requests per run: 100000; warmup per run: 5000
+Latency: end-to-end from first send attempt through complete response
+Order: native then poll; rounds forward, reverse, forward
+
+Benchmark source SHA-256:
+288376812a3bf22264d4001bace487ebbb3d0eadae3df4fdd49542b01af9fae4  tools/bench.c
+cc7415e15d9597acc1d9dc037f693e027bcc836408676ff2ebce5a6ae30a6a73  tools/perf_server.c
+2fb6fb58bae28ce3704f9e348301d9741d2cfc0513903c2830a85c105d103b3b  tools/measure.sh
+Backend: kqueue; SQLite runtime: 3.54.0
+Backend: poll; SQLite runtime: 3.54.0

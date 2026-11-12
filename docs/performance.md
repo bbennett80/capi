@@ -13,6 +13,50 @@ connection table at roughly 50 ms intervals, rather than on every request.
 
 ## Reproduce a measurement
 
+For a full repeated matrix, open the [HTML performance notebook](benchmarks/2026-11-11/index.html).
+Its [raw CSV](benchmarks/2026-11-11/results.csv) contains every measured run,
+and the [environment record](benchmarks/2026-11-11/environment.txt) captures
+the machine, compiler, core revision, SQLite version, and benchmark source hashes.
+
+To reproduce the report from the repository root:
+
+```sh
+./tools/measure.sh docs/benchmarks/my-machine
+open docs/benchmarks/my-machine/index.html # macOS; otherwise open in a browser
+```
+
+This builds two Release configurations (native reactor and forced poll), starts
+an isolated server on an OS-assigned loopback port, and runs six workloads at
+1, 8, 32, 64, and 256 persistent connections. Three rounds produce 180 measured
+runs of 100,000 requests each, with 5,000 warmup requests before every run.
+The second round reverses workload/concurrency order; backends run sequentially.
+The script stops its own server and generates a self-contained HTML/CSS/SVG page
+using C tooling. SQLite development headers, CMake, a C11 compiler, and a POSIX
+shell are required. Allow several minutes and avoid competing CPU work.
+
+For a quicker smoke check, set `CAPI_PERF_REQUESTS=1000` before the command;
+the CSV and page reflect the actual request count. The generator refuses an
+incomplete or duplicate matrix. To regenerate only the HTML after editing its
+presentation:
+
+```sh
+./build-perf-native/capi_perf_report \
+  docs/benchmarks/2026-11-11/results.csv \
+  docs/benchmarks/2026-11-11/environment.txt \
+  docs/benchmarks/2026-11-11/index.html
+```
+
+The fixture measures plain text, static JSON, a parameterized route plus query
+decoding/middleware/JSON escaping, a 16 KiB body, a compiled ten-item HTML
+template, and a ten-row SQLite query plus JSON serialization. SQLite is seeded
+with 1,000 rows in memory. This is a read-only adapter benchmark, not a disk,
+durability, contention, or complete Notes app benchmark. Both processes share
+the host; the client can limit throughput. Median throughput and the observed
+min/max range are reported per configuration. Latency summaries are medians of
+per-run percentiles, not percentiles pooled across all requests.
+
+For a single endpoint measurement:
+
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
@@ -20,14 +64,39 @@ cmake --build build -j
 # In a second terminal:
 ./build/capi_bench 127.0.0.1 8080 1 10000
 ./build/capi_bench 127.0.0.1 8080 64 100000
+# Optional request target and machine-readable output:
+./build/capi_bench 127.0.0.1 8080 64 100000 / --csv
 ```
 
-The bundled C client uses nonblocking sockets and poll, requests `/` over
-HTTP/1.1, validates 200 responses and their lengths, and sends the next request
+The bundled C client uses nonblocking sockets and poll, requests a selected path
+(default `/`) over HTTP/1.1, validates 200 responses and their lengths, and sends the next request
 only after the previous response completes. It supports IPv4 and responses
 smaller than 64 KiB. Connections are established before timing starts. Latency
 includes client scheduling, socket traffic, and server time, but not connect
 latency. Quantiles use sorted per-request samples.
+
+## Repeated 0.4 measurements
+
+The November 11, 2026 matrix on an Apple M1 (8 cores, 8 GiB RAM), macOS 27.0.1,
+Apple Clang 21.0.0, completed all 180 measured runs and 18 million requests
+without a failed run. Measured intervals totaled 266.55 seconds, excluding
+warmup, connection setup, sorting, builds, and reporting. At 64 connections:
+
+| Workload | kqueue median req/s | poll median req/s | kqueue median p99 | poll median p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Plain text | 147,898 | 157,337 | 0.625 ms | 0.552 ms |
+| Static JSON | 152,742 | 147,037 | 0.715 ms | 0.749 ms |
+| Route + query + middleware | 146,759 | 146,773 | 0.595 ms | 0.650 ms |
+| 16 KiB response | 102,865 | 114,510 | 1.146 ms | 0.855 ms |
+| Ten-item template | 114,634 | 116,404 | 0.793 ms | 0.813 ms |
+| Ten-row SQLite read + JSON | 75,307 | 78,586 | 1.183 ms | 1.150 ms |
+
+Each value is a median across three runs; p99 columns are medians of per-run
+p99 values. The [HTML notebook](benchmarks/2026-11-11/index.html) shows every
+connection level and throughput range. Backend order was not randomized and
+the client shares the machine, so the differences do not establish that one
+backend is faster in general. Long tails appeared at 256 connections in several
+cases; peak throughput alone does not describe the latency tradeoff.
 
 ## Initial local measurement
 

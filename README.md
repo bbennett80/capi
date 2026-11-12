@@ -227,6 +227,11 @@ See the [reliability guide and 0.3 migration notes](docs/reliability.md).
 
 ## Verify and measure
 
+See the [performance notebook](docs/benchmarks/2026-11-11/index.html) for repeated
+measurements of six workloads, concurrency scaling, latency, and raw data.
+Run `./tools/measure.sh` to collect the matrix on your own machine; see
+[performance and methodology](docs/performance.md) for details.
+
 ```sh
 make test          # parser, API, routing, middleware, real sockets
 make sanitize      # AddressSanitizer + UndefinedBehaviorSanitizer

@@ -16,7 +16,6 @@
 #include <time.h>
 #include <unistd.h>
 
-static const char request[] = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
 typedef struct { int fd; size_t sent, used, expected; uint64_t started; char buffer[65536]; } client;
 static uint64_t microseconds(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -32,9 +31,17 @@ static unsigned long number(const char *s, unsigned long max) {
     return n;
 }
 int main(int argc, char **argv) {
-    if (argc != 5) {
-        fputs("usage: capi_bench <IPv4 address> <port> <connections> <requests>\n", stderr); return 1;
+    if (argc < 5 || argc > 7 || (argc == 7 && strcmp(argv[6], "--csv"))) {
+        fputs("usage: capi_bench <IPv4 address> <port> <connections> <requests> [path] [--csv]\n", stderr); return 1;
     }
+    const char *path = argc >= 6 ? argv[5] : "/";
+    if (path[0] != '/' || strlen(path) > 2048) return 1;
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p)
+        if (*p <= 32 || *p == 127) return 1;
+    char request[2112];
+    int request_size = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: localhost\r\n\r\n", path);
+    if (request_size < 0 || (size_t)request_size >= sizeof(request)) return 1;
+    size_t request_len = (size_t)request_size;
     unsigned long port = number(argv[2], 65535), concurrency = number(argv[3], 4096), total = number(argv[4], 10000000);
     struct sockaddr_in address = {0}; address.sin_family = AF_INET; address.sin_port = htons((uint16_t)port);
     if (!port || !concurrency || !total || concurrency > total || inet_pton(AF_INET, argv[1], &address.sin_addr) != 1) {
@@ -58,6 +65,7 @@ int main(int argc, char **argv) {
         fds[i] = (struct pollfd){fd, POLLOUT, 0};
     }
     unsigned long started = 0, completed = 0;
+    uint64_t wire_bytes = 0;
     uint64_t begin = microseconds();
     while (completed < total) {
         int ready = poll(fds, (nfds_t)concurrency, 5000);
@@ -69,16 +77,16 @@ int main(int argc, char **argv) {
             if (event & (POLLERR | POLLNVAL)) { fputs("connection error\n", stderr); goto done; }
             if ((event & POLLOUT) && started < total) {
                 if (!c->started) { c->started = microseconds(); ++started; }
-                ssize_t n = send(c->fd, request + c->sent, sizeof(request) - 1 - c->sent, 0);
+                ssize_t n = send(c->fd, request + c->sent, request_len - c->sent, 0);
                 if (n < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue; perror("send"); goto done; }
                 c->sent += (size_t)n;
-                if (c->sent == sizeof(request) - 1) fds[i].events = POLLIN;
+                if (c->sent == request_len) fds[i].events = POLLIN;
             } else if ((event & POLLOUT) && c->started) {
                 /* Finish a partial write even after the final request was started. */
-                ssize_t n = send(c->fd, request + c->sent, sizeof(request) - 1 - c->sent, 0);
+                ssize_t n = send(c->fd, request + c->sent, request_len - c->sent, 0);
                 if (n < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue; perror("send"); goto done; }
                 c->sent += (size_t)n;
-                if (c->sent == sizeof(request) - 1) fds[i].events = POLLIN;
+                if (c->sent == request_len) fds[i].events = POLLIN;
             } else if ((event & POLLOUT) && started == total) fds[i].events = 0;
             if (event & (POLLIN | POLLHUP)) {
                 ssize_t n = recv(c->fd, c->buffer + c->used, sizeof(c->buffer) - c->used - 1, 0);
@@ -99,6 +107,7 @@ int main(int argc, char **argv) {
                     }
                 }
                 if (c->expected && c->used == c->expected) {
+                    wire_bytes += c->used;
                     latency[completed++] = microseconds() - c->started;
                     c->started = 0; c->sent = c->used = c->expected = 0;
                     fds[i].events = started < total ? POLLOUT : 0;
@@ -108,11 +117,18 @@ int main(int argc, char **argv) {
     }
     double seconds = (double)(microseconds() - begin) / 1000000.0;
     qsort(latency, total, sizeof(*latency), compare);
-    printf("%lu requests · %lu connections · %.3f s\n", total, concurrency, seconds);
-    printf("%.0f requests/s\n", (double)total / seconds);
-    printf("latency: p50 %.3f ms · p95 %.3f ms · p99 %.3f ms\n",
-           (double)latency[total / 2] / 1000.0, (double)latency[(total - 1) * 95 / 100] / 1000.0,
-           (double)latency[(total - 1) * 99 / 100] / 1000.0);
+    double p50 = (double)latency[total / 2] / 1000.0;
+    double p95 = (double)latency[(total - 1) * 95 / 100] / 1000.0;
+    double p99 = (double)latency[(total - 1) * 99 / 100] / 1000.0;
+    if (argc == 7) {
+        /* connections,requests,seconds,rps,p50_ms,p95_ms,p99_ms,wire_bytes */
+        printf("%lu,%lu,%.6f,%.3f,%.3f,%.3f,%.3f,%" PRIu64 "\n",
+               concurrency, total, seconds, (double)total / seconds, p50, p95, p99, wire_bytes);
+    } else {
+        printf("%lu requests · %lu connections · %.3f s\n", total, concurrency, seconds);
+        printf("%.0f requests/s\n", (double)total / seconds);
+        printf("latency: p50 %.3f ms · p95 %.3f ms · p99 %.3f ms\n", p50, p95, p99);
+    }
     result = 0;
 done:
     for (unsigned long i = 0; i < concurrency; ++i) if (clients[i].fd >= 0) close(clients[i].fd);
