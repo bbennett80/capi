@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: capi-templates
+Description: Compiled HTML templates for capi
+Version: @PROJECT_VERSION@
+Requires: capi
+Libs: -L${libdir} -lcapi_templates
+Cflags: -I${includedir}

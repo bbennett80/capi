@@ -31,7 +31,7 @@ latency. Quantiles use sorted per-request samples.
 
 ## Initial local measurement
 
-Measured November 11, 2026, on an arm64 MacBook Air, Darwin 27.0.0,
+Measured capi 0.1.0 on November 11, 2026, on an arm64 MacBook Air, Darwin 27.0.0,
 Apple Clang 21.0.0, CMake Release build (`-O3 -DNDEBUG`), kqueue. Server and client
 ran on the same machine over loopback. The handler used `capi_text` to return
 the 17-byte `Hello from capi!\n` body, with Content-Type, Date, Content-Length,
@@ -70,3 +70,12 @@ checked in an isolated prefix.
 The Linux epoll backend has a CI job; it was not executed on the macOS
 development host. Fuzz smoke testing and sanitizer passes are evidence about
 the exercised cases, not a security audit.
+
+For 0.2, the SQLite adapter, templates, form decoder, and notes integration tests
+passed in sanitizer, poll, and shared builds; the core-only build also passed
+without either extension. Installed core-only and component consumers compiled
+and ran. Clang static analysis found no diagnostics in the changed runtime code.
+A template fuzz run completed 938,587 inputs in 31 seconds, and an HTTP fuzz run
+including form decoding completed 647,335 inputs in 21 seconds, without crashes.
+The notes form/redirect/escaping flow was also checked over a real loopback HTTP
+connection. These are local macOS checks; Linux is covered by the configured CI.

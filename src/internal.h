@@ -6,6 +6,11 @@
 
 typedef struct { char *data; size_t len, cap; } cp_buf;
 typedef struct { capi_str name, value; } cp_header;
+typedef struct cp_cleanup {
+    capi_cleanup_fn fn;
+    void *data;
+    struct cp_cleanup *next;
+} cp_cleanup;
 typedef struct cp_arena {
     struct cp_arena *next;
     size_t used, cap;
@@ -50,6 +55,7 @@ struct capi_ctx {
     size_t nresponse_headers;
     cp_buf *output;
     cp_arena *arena;
+    cp_cleanup *cleanup;
     void *data, *state;
     size_t next_middleware;
     unsigned depth;

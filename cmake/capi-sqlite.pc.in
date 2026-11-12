@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: capi-sqlite
+Description: Request-scoped SQLite integration for capi
+Version: @PROJECT_VERSION@
+Requires: capi sqlite3
+Libs: -L${libdir} -lcapi_sqlite
+Cflags: -I${includedir}

@@ -2,7 +2,8 @@
 
 **Small surface. Fast core. Just C.**
 
-capi is a dependency-free C11 web framework for HTTP APIs and small services.
+capi is a C11 web framework for HTTP APIs and small services, with a
+dependency-free core and optional SQLite and HTML template libraries.
 Write a handler, register a route, start a server. No code generation, runtime,
 package manager, or global application singleton.
 
@@ -64,6 +65,9 @@ cc -std=c11 -O2 -Iinclude src/*.c examples/hello.c -o hello
   Connection buffers are reused across requests. No per-request routing allocation.
 - **Useful response helpers.** Text, JSON, redirects, binary bodies, formatted
   output, copied headers, and an escaping helper that validates UTF-8.
+- **Optional application libraries.** Native SQLite integration with request
+  cleanup and explicit transactions, plus compiled HTML templates with escaping,
+  sections, loops, and partials. Core-only applications link neither library.
 - **Tests without sockets.** `capi_dispatch` runs the real parser, router,
   middleware, and serializer against an in-memory HTTP request.
 - **A complete development path.** CMake and pkg-config installation,
@@ -129,10 +133,44 @@ cmake --build my-service/build
 ./my-service/build/app
 ```
 
-Installed projects use `find_package(capi 0.1 CONFIG REQUIRED)` and
+Installed projects use `find_package(capi 0.2 CONFIG REQUIRED)` and
 `target_link_libraries(app PRIVATE capi::capi)`. Plain compiler builds can use
 `pkg-config --cflags --libs capi` with the install prefix's `lib/pkgconfig`
 directory on `PKG_CONFIG_PATH`.
+
+## SQLite and templates
+
+Build the optional SQLite adapter and the [Fieldnotes example](examples/notes/README.md):
+
+```sh
+make extras
+./build-extras/capi_notes
+# Open http://127.0.0.1:8080
+```
+
+Fieldnotes saves notes in SQLite and renders them through compiled HTML templates,
+with no frontend build step. It demonstrates bound parameters, explicit commits,
+automatic cleanup/rollback, form decoding, redirects, partials, and escaped values.
+
+Use `-DCAPI_WITH_SQLITE=ON` to enable the SQLite adapter; development headers and
+libraries must be installed. Templates build as a separate library by default,
+and can be disabled with `-DCAPI_WITH_TEMPLATES=OFF`. Installed apps request the
+components they use:
+
+```cmake
+find_package(capi 0.2 CONFIG REQUIRED COMPONENTS sqlite templates)
+target_link_libraries(app PRIVATE capi::sqlite capi::templates)
+```
+
+The SQLite adapter uses native statements and result codes. Statements finalize
+after the request pipeline, and managed transactions roll back unless explicitly
+committed. Queries execute synchronously; keep them short and handle contention
+explicitly. See the [SQLite guide](docs/sqlite.md).
+
+Templates compile once at startup. `{{name}}` escapes HTML; sections, lists,
+dotted lookup, comments, and registered partials support ordinary pages without
+an expression language. `{{{trusted_html}}}` explicitly opts out of escaping.
+See the [template guide](docs/templates.md).
 
 ## Verify and measure
 
@@ -140,6 +178,7 @@ directory on `PKG_CONFIG_PATH`.
 make test          # parser, API, routing, middleware, real sockets
 make sanitize      # AddressSanitizer + UndefinedBehaviorSanitizer
 make poll          # run the same suite against the fallback backend
+make extras        # also test SQLite, templates, and the notes app
 
 # With capi_hello running:
 ./build/capi_bench 127.0.0.1 8080 64 100000
@@ -151,11 +190,12 @@ not an independent performance comparison. See [benchmark methodology](docs/perf
 
 ## Scope
 
-capi 0.1 is a compact foundation, with an intentionally small API. Handlers run
+capi 0.2 is a compact foundation, with an intentionally small API. Handlers run
 synchronously on one event-loop thread: keep them short and avoid blocking I/O.
 Scale independent instances behind a proxy. There is no built-in TLS, HTTP/2,
-WebSocket, streaming, compression, multipart parser, JSON parser, database layer,
-or background task system. Use a TLS reverse proxy for HTTPS.
+WebSocket, streaming, compression, multipart parser, JSON parser,
+or background task system. The optional SQLite library is a synchronous adapter,
+not an asynchronous database layer. Use a TLS reverse proxy for HTTPS.
 
 Request bodies require `Content-Length`; chunked transfer coding is rejected
 with 501, `Expect` with 417, and ambiguous framing with 400. Bodies and responses

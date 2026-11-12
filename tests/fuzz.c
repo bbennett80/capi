@@ -6,6 +6,7 @@ static void echo(capi_ctx *ctx) {
     capi_str name;
     capi_query(ctx, "name", &name);
     capi_json_string(ctx, name);
+    if (capi_form(ctx, "name", &name) == 1) capi_json_string(ctx, name);
     capi_str body = capi_body(ctx);
     capi_write(ctx, body.data, body.len);
 }

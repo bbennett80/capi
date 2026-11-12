@@ -241,7 +241,65 @@ static void responses(void) {
     capi_app_free(app);
 }
 
+static char cleanup_order[32];
+static size_t cleanup_at;
+static void cleanup_record(void *data) { cleanup_order[cleanup_at++] = *(char *)data; }
+static void defer_outer(capi_ctx *ctx) {
+    char *letter = capi_alloc(ctx, 1); CHECK(letter); *letter = 'a';
+    CHECK(capi_defer(ctx, cleanup_record, letter) == 0);
+    capi_next(ctx);
+    CHECK(cleanup_at == 0); /* cleanup is after the full middleware unwind */
+}
+static void defer_endpoint(capi_ctx *ctx) {
+    char *letter = capi_alloc(ctx, 1); CHECK(letter); *letter = 'b';
+    CHECK(capi_defer(ctx, cleanup_record, letter) == 0);
+    if (capi_str_eq(capi_path(ctx), "/fail")) capi_fail(ctx);
+    capi_text(ctx, 200, "deferred");
+}
+static void defer_halt(capi_ctx *ctx) {
+    char *letter = capi_alloc(ctx, 1); CHECK(letter); *letter = 'h';
+    CHECK(capi_defer(ctx, cleanup_record, letter) == 0);
+    capi_text(ctx, 403, "halted");
+}
+static void form_value(capi_ctx *ctx) {
+    capi_str value;
+    int result = capi_form(ctx, "name", &value);
+    if (result < 0) { capi_text(ctx, 400, "bad form"); return; }
+    if (!result) { capi_text(ctx, 200, "absent"); return; }
+    capi_json(ctx, 200, ""); capi_json_string(ctx, value);
+}
+static void lifecycle_and_forms(void) {
+    capi_app *app = capi_app_new(); CHECK(app);
+    CHECK(capi_use(app, "/", defer_outer, NULL) == 0);
+    CHECK(capi_use(app, "/halt", defer_halt, NULL) == 0);
+    CHECK(capi_route(app, CAPI_GET, "/", defer_endpoint, NULL) == 0);
+    CHECK(capi_route(app, CAPI_GET, "/fail", defer_endpoint, NULL) == 0);
+    const char *paths[] = {"/", "/fail", "/halt"};
+    for (size_t i = 0; i < 3; ++i) {
+        cleanup_at = 0;
+        char request[128]; snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: x\r\n\r\n", paths[i]);
+        capi_result r = send_request(app, request, i == 0 ? 200 : i == 1 ? 500 : 403);
+        CHECK(cleanup_at == 2 && !memcmp(cleanup_order, i == 2 ? "ha" : "ba", 2)); capi_result_free(&r);
+    }
+    capi_app_free(app);
+    app = capi_app_new(); CHECK(app);
+    CHECK(capi_route(app, CAPI_POST, "/", form_value, NULL) == 0);
+    struct { const char *input, *expected; int status; } forms[] = {
+        {"name=Ada+Lovelace", "\"Ada Lovelace\"", 200}, {"na%6de=%22%3C%26", "\"\\\"<&\"", 200},
+        {"name=one&name=two", "\"one\"", 200}, {"name=", "\"\"", 200}, {"other=a", "absent", 200},
+        {"name=%00", "\"\\u0000\"", 200}, {"name=%xy", "bad form", 400}
+    };
+    for (size_t i = 0; i < sizeof(forms) / sizeof(*forms); ++i) {
+        char request[512];
+        snprintf(request, sizeof(request), "POST / HTTP/1.1\r\nHost: x\r\nContent-Type: Application/X-Www-Form-Urlencoded; charset=UTF-8\r\nContent-Length: %zu\r\n\r\n%s",
+                 strlen(forms[i].input), forms[i].input);
+        capi_result r = send_request(app, request, forms[i].status); body_is(&r, forms[i].expected); capi_result_free(&r);
+    }
+    capi_result r = send_request(app, "POST / HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain\r\nContent-Length: 6\r\n\r\nname=x", 400);
+    body_is(&r, "bad form"); capi_result_free(&r); capi_app_free(app);
+}
+
 int main(void) {
-    routing(); middleware(); parser(); responses();
+    routing(); middleware(); parser(); responses(); lifecycle_and_forms();
     printf("core: %u checks passed\n", checks); return 0;
 }

@@ -1,7 +1,7 @@
 #ifndef CAPI_H
 #define CAPI_H
 
-/* capi 0.1.0 — C11, no dependencies. All lengths are bytes. */
+/* capi 0.2.0 — C11, no dependencies in the core. All lengths are bytes. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define CAPI_VERSION "0.1.0"
+#define CAPI_VERSION "0.2.0"
 #define CAPI_MAX_HEADERS 64
 #define CAPI_MAX_PARAMS 16
 
@@ -47,6 +47,11 @@ void *capi_data(const capi_ctx *ctx); /* current handler's registration data */
 void capi_set_state(capi_ctx *ctx, void *state);
 void *capi_state(const capi_ctx *ctx); /* application-owned request state */
 void *capi_alloc(capi_ctx *ctx, size_t bytes); /* max_align_t aligned, zeroed */
+typedef void (*capi_cleanup_fn)(void *data);
+/* LIFO cleanup after the pipeline, before response finalization and arena free.
+ * Runs on short-circuits and failed responses too. Returns 0 or -1. */
+int capi_defer(capi_ctx *ctx, capi_cleanup_fn cleanup, void *data);
+void capi_fail(capi_ctx *ctx); /* substitute a clean 500 at finalization */
 
 capi_str capi_request_method(const capi_ctx *ctx);
 capi_str capi_path(const capi_ctx *ctx); /* raw, query excluded */
@@ -56,6 +61,9 @@ capi_str capi_param(const capi_ctx *ctx, const char *name); /* raw path segment 
 /* Query values are percent-decoded (+ becomes space), allocated in ctx.
  * Returns 1 found, 0 absent, -1 malformed encoding/allocation failure. */
 int capi_query(capi_ctx *ctx, const char *name, capi_str *value);
+/* Like query, for application/x-www-form-urlencoded bodies. Wrong content
+ * type returns -1. Parameters such as charset are accepted. No multipart. */
+int capi_form(capi_ctx *ctx, const char *name, capi_str *value);
 bool capi_str_eq(capi_str value, const char *text);
 
 void capi_status(capi_ctx *ctx, int status);
@@ -66,6 +74,7 @@ int capi_set_header(capi_ctx *ctx, const char *name, const char *value);
 int capi_write(capi_ctx *ctx, const void *bytes, size_t len);
 int capi_printf(capi_ctx *ctx, const char *format, ...);
 int capi_text(capi_ctx *ctx, int status, const char *text);
+int capi_html(capi_ctx *ctx, int status, const char *html);
 int capi_json(capi_ctx *ctx, int status, const char *json);
 /* Appends a quoted, escaped JSON string; validates UTF-8. */
 int capi_json_string(capi_ctx *ctx, capi_str string);

@@ -240,6 +240,17 @@ void cp_arena_free(cp_arena *a) {
     while (a) { cp_arena *next = a->next; free(a); a = next; }
 }
 
+void capi_fail(capi_ctx *ctx) { if (ctx) ctx->failed = true; }
+
+int capi_defer(capi_ctx *ctx, capi_cleanup_fn cleanup, void *data) {
+    if (!ctx || !cleanup) { capi_fail(ctx); return -1; }
+    cp_cleanup *entry = capi_alloc(ctx, sizeof(*entry));
+    if (!entry) return -1;
+    *entry = (cp_cleanup){cleanup, data, ctx->cleanup};
+    ctx->cleanup = entry;
+    return 0;
+}
+
 void *capi_data(const capi_ctx *ctx) { return ctx->data; }
 void *capi_state(const capi_ctx *ctx) { return ctx->state; }
 void capi_set_state(capi_ctx *ctx, void *state) { ctx->state = state; }
@@ -282,28 +293,43 @@ static int decode(const char *p, size_t len, char *out, size_t *outlen) {
     return 0;
 }
 
-int capi_query(capi_ctx *ctx, const char *name, capi_str *value) {
+static int pairs(capi_ctx *ctx, capi_str input, const char *name, capi_str *value) {
     if (!name || !value) return -1;
     *value = (capi_str){NULL, 0};
     size_t at = 0;
-    while (at < ctx->query.len) {
+    while (at < input.len) {
         size_t end = at, eq;
-        while (end < ctx->query.len && ctx->query.data[end] != '&') ++end;
+        while (end < input.len && input.data[end] != '&') ++end;
         eq = at;
-        while (eq < end && ctx->query.data[eq] != '=') ++eq;
+        while (eq < end && input.data[eq] != '=') ++eq;
         size_t keylen = 0;
         char *key = capi_alloc(ctx, eq - at + 1);
-        if (!key || decode(ctx->query.data + at, eq - at, key, &keylen)) return -1;
+        if (!key || decode(input.data + at, eq - at, key, &keylen)) return -1;
         if (strlen(name) == keylen && memcmp(name, key, keylen) == 0) {
             size_t start = eq < end ? eq + 1 : end, len = 0;
             char *p = capi_alloc(ctx, end - start + 1);
-            if (!p || decode(ctx->query.data + start, end - start, p, &len)) return -1;
+            if (!p || decode(input.data + start, end - start, p, &len)) return -1;
             *value = (capi_str){p, len};
             return 1;
         }
         at = end + 1;
     }
     return 0;
+}
+
+int capi_query(capi_ctx *ctx, const char *name, capi_str *value) {
+    return pairs(ctx, ctx->query, name, value);
+}
+
+int capi_form(capi_ctx *ctx, const char *name, capi_str *value) {
+    if (!name || !value) return -1;
+    *value = (capi_str){NULL, 0};
+    capi_str type = capi_header(ctx, "Content-Type");
+    size_t end = 0;
+    while (end < type.len && type.data[end] != ';') ++end;
+    while (end && (type.data[end - 1] == ' ' || type.data[end - 1] == '\t')) --end;
+    if (!cp_caseeq((capi_str){type.data, end}, "application/x-www-form-urlencoded")) return -1;
+    return pairs(ctx, ctx->body, name, value);
 }
 
 void capi_status(capi_ctx *ctx, int status) {
@@ -369,6 +395,7 @@ static int typed(capi_ctx *ctx, int status, const char *type, const char *body) 
     return capi_write(ctx, body, body ? strlen(body) : 0);
 }
 int capi_text(capi_ctx *ctx, int status, const char *text) { return typed(ctx, status, "text/plain; charset=utf-8", text); }
+int capi_html(capi_ctx *ctx, int status, const char *html) { return typed(ctx, status, "text/html; charset=utf-8", html); }
 int capi_json(capi_ctx *ctx, int status, const char *json) { return typed(ctx, status, "application/json; charset=utf-8", json); }
 int capi_redirect(capi_ctx *ctx, int status, const char *location) {
     if (status < 300 || status > 399 || status == 304) { ctx->failed = true; return -1; }
@@ -527,6 +554,11 @@ int cp_process(capi_app *app, const char *data, size_t len, cp_buf *body, cp_buf
             if (!ctx.route) ctx.route = ctx.matched->routes[CAPI_ANY];
         }
         advance(&ctx);
+    }
+    while (ctx.cleanup) {
+        cp_cleanup *entry = ctx.cleanup;
+        ctx.cleanup = entry->next;
+        entry->fn(entry->data);
     }
     if (ctx.failed) {
         body->len = 0; ctx.nresponse_headers = 0; ctx.status = 500; ctx.close = true;

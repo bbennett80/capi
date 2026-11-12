@@ -30,7 +30,7 @@ static const char main_source[] =
 static const char cmake_source[] =
     "cmake_minimum_required(VERSION 3.16)\nproject(my_capi_app LANGUAGES C)\n"
     "set(CMAKE_C_STANDARD 11)\nset(CMAKE_C_STANDARD_REQUIRED ON)\n"
-    "find_package(capi 0.1 CONFIG REQUIRED)\nadd_executable(app main.c)\n"
+    "find_package(capi 0.2 CONFIG REQUIRED)\nadd_executable(app main.c)\n"
     "target_link_libraries(app PRIVATE capi::capi)\n";
 static int write_file(const char *directory, const char *name, const char *contents) {
     size_t len = strlen(directory) + strlen(name) + 2;

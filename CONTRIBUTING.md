@@ -10,6 +10,8 @@ Before a change:
 make test
 make sanitize
 make poll
+make extras         # requires SQLite development headers/libraries
+make sanitize CMAKE_ARGS=-DCAPI_WITH_SQLITE=ON
 ```
 
 Add behavioral tests for routing, HTTP framing, lifecycle, and memory-safety
@@ -27,10 +29,15 @@ cmake --build build-fuzz -j
 mkdir -p build-fuzz/corpus
 printf 'GET / HTTP/1.1\r\nHost: test\r\n\r\n' > build-fuzz/corpus/get
 ./build-fuzz/capi_fuzz -max_total_time=60 -max_len=65536 build-fuzz/corpus
+mkdir -p build-fuzz/template-corpus
+printf '{{#items}}<p>{{name}}</p>{{/items}}{{>card}}' > build-fuzz/template-corpus/view
+./build-fuzz/capi_template_fuzz -max_total_time=60 -max_len=65536 build-fuzz/template-corpus
 ```
 
-The harness runs the complete in-memory dispatch path, including decoded query
-values and JSON escaping. Minimize crashes and add the input as a regression
+The HTTP harness runs the complete in-memory dispatch path, including decoded
+query/form values and JSON escaping. The template harness compiles arbitrary
+sources and renders successful compilations with sections, lists, escaped values,
+and recursive partials. Minimize crashes and add the input as a regression
 test. Do not commit generated fuzz corpora or build products.
 
 Report performance changes with compiler flags, machine details, request shape,

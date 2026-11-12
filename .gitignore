@@ -8,3 +8,6 @@
 .DS_Store
 /CMakeUserPresets.json
 /compile_commands.json
+/notes.db
+/notes.db-wal
+/notes.db-shm

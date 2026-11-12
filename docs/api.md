@@ -1,7 +1,9 @@
 # API guide
 
-The complete public API lives in [`include/capi.h`](../include/capi.h).
+The core public API lives in [`include/capi.h`](../include/capi.h).
 Include this header and link `capi::capi` or `-lcapi`.
+Optional [SQLite](sqlite.md) and [template](templates.md) libraries have separate
+headers and link targets.
 
 ## Lifetime and ownership
 
@@ -10,8 +12,8 @@ Include this header and link `capi::capi` or `-lcapi`.
 | `capi_app *` | Caller | `capi_app_free` |
 | `capi_server *` | Caller | `capi_server_free` |
 | Handler registration data | Application | Last dispatch/server use |
-| Request `capi_str` views | Framework input buffer | Handler/middleware pipeline finishes |
-| Query values / `capi_alloc` memory | Request arena | Handler/middleware pipeline finishes |
+| Request `capi_str` views | Framework input buffer | Pipeline and deferred cleanup finish |
+| Query/form values / `capi_alloc` memory | Request arena | Pipeline and deferred cleanup finish |
 | State set with `capi_set_state` | Application | Application-defined; arena allocations remain request-scoped |
 | Response header arguments | Copied into arena | Original arguments may immediately change |
 | Bytes passed to `capi_write` | Copied into response | Original argument may immediately change |
@@ -101,6 +103,15 @@ For request state, allocate a struct with `capi_alloc` and store it through
 returns NULL and marks the response as failed. External objects stored as
 state are not freed by capi.
 
+Use `capi_defer(ctx, cleanup_fn, data)` for non-arena resources such as files or
+database statements. Callbacks receive their data pointer, run once in reverse
+registration order after the entire pipeline unwinds, and run even on early
+returns and failed responses. Arena memory and request views remain valid
+during cleanup. Callbacks must not free arena allocations or dispatch the same
+context again. If registering cleanup fails, it returns -1 and marks the
+response failed; the caller still owns the resource and must release it.
+`capi_fail(ctx)` explicitly marks a response for clean 500 substitution.
+
 ## Reading a request
 
 - `capi_request_method`: original method spelling.
@@ -109,6 +120,7 @@ state are not freed by capi.
 - `capi_param`: route capture, or `{NULL, 0}` if absent.
 - `capi_body`: complete buffered body; binary-safe.
 - `capi_query`: decoded first value for a query key.
+- `capi_form`: decoded first value for a URL-encoded form body.
 
 ```c
 capi_str name;
@@ -123,13 +135,19 @@ Malformed key encodings encountered during the search, or a malformed matching
 value, return -1. Unrelated values are not decoded. NUL bytes are preserved;
 there is no automatic UTF-8 validation until `capi_json_string` is used.
 
+`capi_form` uses the same decoder on the buffered body and requires a
+case-insensitive `application/x-www-form-urlencoded` Content-Type. Parameters
+such as `; charset=UTF-8` are accepted; absent/other content types return -1.
+It has the same found/absent/malformed return convention and first-value
+behavior as query lookup. Multipart forms are not implemented.
+
 ## Writing a response
 
 `capi_status` changes the status (200–599). Default: 200. `capi_write` appends
 bytes; `capi_printf` appends formatted bytes. Format strings must be trusted,
 just as with standard `printf`.
 
-`capi_text` and `capi_json` set status and content type, **replace the body**, and
+`capi_text`, `capi_html`, and `capi_json` set status and content type, **replace the body**, and
 preserve other headers. `capi_json` accepts already serialized JSON; it does
 not parse or validate it. `capi_json_string` appends a quoted JSON string,
 escaping control bytes, quotes, and backslashes, and rejecting invalid UTF-8.

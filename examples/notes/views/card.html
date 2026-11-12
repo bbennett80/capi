@@ -1,0 +1,8 @@
+<article class="note">
+  <h3>{{title}}</h3>
+  <p class="note-body">{{body}}</p>
+  <footer>
+    <span class="date">{{date}} UTC</span>
+    <form action="/notes/{{id}}/delete" method="post"><button class="delete" type="submit" aria-label="Delete note: {{title}}">Delete</button></form>
+  </footer>
+</article>

@@ -10,10 +10,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install SQLite development files
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - name: Configure
         shell: bash
         run: |
-          args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror)
+          args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_SQLITE=ON)
           if [[ '${{ matrix.mode }}' == sanitize ]]; then args+=(-DCAPI_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug); fi
           if [[ '${{ matrix.mode }}' == poll ]]; then args+=(-DCAPI_FORCE_POLL=ON); fi
           cmake -S . -B build "${args[@]}"
@@ -25,6 +28,19 @@ jobs:
           build/capi new "$RUNNER_TEMP/starter"
           cmake -S "$RUNNER_TEMP/starter" -B "$RUNNER_TEMP/starter/build" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
           cmake --build "$RUNNER_TEMP/starter/build"
+          cmake -S tests/consumer -B build-consumer-core -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" -DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=ON ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
+          cmake --build build-consumer-core
+          build-consumer-core/consumer
+          cmake -S tests/consumer -B build-consumer-extras -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" -DCAPI_CONSUME_EXTRAS=ON ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
+          cmake --build build-consumer-extras
+          build-consumer-extras/consumer
+  core-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_SQLITE=OFF -DCAPI_WITH_TEMPLATES=OFF -DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=ON
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
   fuzz:
     runs-on: ubuntu-latest
     steps:
@@ -38,3 +54,6 @@ jobs:
           printf 'GET / HTTP/1.1\r\nHost: test\r\n\r\n' > build-fuzz/corpus/get
           printf 'POST /id/path?name=Ada%%20Lovelace HTTP/1.1\r\nHost: test\r\nContent-Length: 3\r\n\r\nabc' > build-fuzz/corpus/post
           build-fuzz/capi_fuzz -max_total_time=30 -max_len=65536 build-fuzz/corpus
+          mkdir -p build-fuzz/template-corpus
+          printf '{{#items}}<p>{{name}}</p>{{/items}}{{>card}}' > build-fuzz/template-corpus/view
+          build-fuzz/capi_template_fuzz -max_total_time=30 -max_len=65536 build-fuzz/template-corpus
