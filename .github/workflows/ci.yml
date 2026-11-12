@@ -1,0 +1,40 @@
+name: C build and test
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        mode: [release, sanitize, poll]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: bash
+        run: |
+          args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror)
+          if [[ '${{ matrix.mode }}' == sanitize ]]; then args+=(-DCAPI_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug); fi
+          if [[ '${{ matrix.mode }}' == poll ]]; then args+=(-DCAPI_FORCE_POLL=ON); fi
+          cmake -S . -B build "${args[@]}"
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
+      - name: Check installed consumer
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/capi"
+          build/capi new "$RUNNER_TEMP/starter"
+          cmake -S "$RUNNER_TEMP/starter" -B "$RUNNER_TEMP/starter/build" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
+          cmake --build "$RUNNER_TEMP/starter/build"
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: CC=clang cmake -S . -B build-fuzz -DCAPI_BUILD_FUZZER=ON -DCAPI_BUILD_TESTS=OFF -DCAPI_BUILD_EXAMPLES=OFF -DCAPI_BUILD_TOOLS=OFF
+      - run: cmake --build build-fuzz --parallel
+      - name: Fuzz smoke test
+        run: |
+          mkdir -p build-fuzz/corpus
+          printf 'GET / HTTP/1.1\r\nHost: test\r\n\r\n' > build-fuzz/corpus/get
+          printf 'POST /id/path?name=Ada%%20Lovelace HTTP/1.1\r\nHost: test\r\nContent-Length: 3\r\n\r\nabc' > build-fuzz/corpus/post
+          build-fuzz/capi_fuzz -max_total_time=30 -max_len=65536 build-fuzz/corpus

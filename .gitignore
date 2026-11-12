@@ -1,0 +1,10 @@
+/build*/
+/out/
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+.DS_Store
+/CMakeUserPresets.json
+/compile_commands.json
