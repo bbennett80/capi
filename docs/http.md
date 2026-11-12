@@ -55,8 +55,10 @@ through asynchronous work, including after cancellation closes the socket.
 
 `max_connections` bounds accepted sockets (maximum 65536); it does not preallocate
 body buffers. At capacity, newly accepted sockets close immediately. OS file
-descriptor limits also apply. The app controls arena allocations; their total
-is not independently capped. Keep request handlers' allocations bounded.
+descriptor limits also apply. Arena allocations have a separate per-request
+reserved-memory budget (default 1 MiB, including block headers/alignment), which
+also applies while background work retains a cancelled request. External heap
+allocations remain application-controlled.
 
 Idle deadlines apply to read and write inactivity. An additional total receive
 deadline limits slow request trickling, even when bytes keep arriving. Deadline

@@ -20,7 +20,7 @@ typedef struct {
 /* Waits for all initializers. Failure joins every started thread and disposes
  * non-NULL state, including state returned by a failing initializer. Sets errno.
  * Initializers may run concurrently. The pool may be shared across servers. */
-capi_workers *capi_workers_new(capi_workers_options options);
+CAPI_NODISCARD capi_workers *capi_workers_new(capi_workers_options options);
 /* Stop accepting, drain/join workers, release the owner's reference.
  * Normally call after server_run returns. Never call from a worker callback.
  * Already posted completions retain the pool until the loop releases them.
@@ -40,7 +40,7 @@ typedef enum {
  * capi_defer cleanup runs on that loop after work/done, even if cancelled.
  * On rejection no callbacks run. Handle FULL/UNAVAILABLE explicitly (e.g. 503).
  * Not available in capi_dispatch or in a completion callback. */
-capi_work_result capi_work_submit(capi_ctx *ctx, capi_workers *pool,
+CAPI_NODISCARD capi_work_result capi_work_submit(capi_ctx *ctx, capi_workers *pool,
                                   capi_work_fn work, capi_work_done_fn done, void *data);
 /* Cooperative cancellation. job is valid only within its work callback.
  * Queued cancelled jobs skip work; running callbacks must eventually return. */

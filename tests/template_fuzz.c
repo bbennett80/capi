@@ -20,10 +20,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t len) {
     capi_app *app = capi_app_new();
     if (!app) abort();
     fixture f = {view, {(const char *)data, len}};
-    capi_route(app, CAPI_GET, "/", render, &f);
+    if (capi_route(app, CAPI_GET, "/", render, &f)) abort();
     const char request[] = "GET / HTTP/1.1\r\nHost: test\r\n\r\n";
     capi_result result;
-    capi_dispatch(app, request, sizeof(request) - 1, &result);
+    if (capi_dispatch(app, request, sizeof(request) - 1, &result) < 0) abort();
     capi_result_free(&result); capi_app_free(app); capi_template_free(view);
     return 0;
 }

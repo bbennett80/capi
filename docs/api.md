@@ -90,7 +90,7 @@ static void auth(capi_ctx *ctx) {
     capi_next(ctx);
     /* Runs after later middleware and the endpoint. */
 }
-capi_use(app, "/api", auth, auth_config);
+if (capi_use(app, "/api", auth, auth_config)) { /* handle setup failure */ }
 ```
 
 Middleware runs in registration order before all endpoints, including built-in
@@ -116,6 +116,9 @@ during cleanup. Callbacks must not free arena allocations or dispatch the same
 context again. If registering cleanup fails, it returns -1 and marks the
 response failed; the caller still owns the resource and must release it.
 `capi_fail(ctx)` explicitly marks a response for clean 500 substitution.
+The first error is retained for `capi_request_error` and `capi_on_error`.
+Use `capi_on_finish` for final logging; code after next runs before async
+completion and response-failure substitution. See [request reports](reliability.md).
 
 ## Reading a request
 
@@ -129,22 +132,54 @@ response failed; the caller still owns the resource and must release it.
 
 ```c
 capi_str name;
-int found = capi_query(ctx, "name", &name);
+capi_input_result found = capi_query(ctx, "name", &name);
+if (found == CAPI_INPUT_NO_MEMORY) return; /* already marked failed */
 if (found < 0) { capi_text(ctx, 400, "Invalid query\n"); return; }
-if (found == 0) name = (capi_str){"world", 5};
+if (found == CAPI_INPUT_MISSING) name = (capi_str){"world", 5};
 ```
 
 Query keys and values use percent decoding and `+` to space conversion.
 An empty value is found with length 0. Repeated keys return the first value.
 Malformed key encodings encountered during the search, or a malformed matching
-value, return -1. Unrelated values are not decoded. NUL bytes are preserved;
+value, return `CAPI_INPUT_ENCODING`. Unrelated values are not decoded. NUL bytes are preserved;
 there is no automatic UTF-8 validation until `capi_json_string` is used.
 
 `capi_form` uses the same decoder on the buffered body and requires a
 case-insensitive `application/x-www-form-urlencoded` Content-Type. Parameters
-such as `; charset=UTF-8` are accepted; absent/other content types return -1.
+such as `; charset=UTF-8` are accepted; absent/other content types return `CAPI_INPUT_CONTENT_TYPE`.
 It has the same found/absent/malformed return convention and first-value
 behavior as query lookup. Multipart forms are not implemented.
+
+| Result | Meaning |
+| --- | --- |
+| `CAPI_INPUT_FOUND` (1) | Value found or conversion succeeded |
+| `CAPI_INPUT_MISSING` (0) | No matching field/capture |
+| `CAPI_INPUT_ENCODING` (-1) | Malformed percent encoding encountered |
+| `CAPI_INPUT_CONTENT_TYPE` (-2) | Form content type absent/unsupported |
+| `CAPI_INPUT_RANGE` (-3) | Integer overflow or value outside inclusive bounds |
+| `CAPI_INPUT_NO_MEMORY` (-4) | Arena limit/allocation failure; response already failed |
+| `CAPI_INPUT_VALUE` (-5) | Empty or malformed decimal integer |
+| `CAPI_INPUT_ARGUMENT` (-6) | Invalid API argument or minimum greater than maximum |
+
+`capi_str_i64` converts an explicit-length string; `capi_param_i64`,
+`capi_query_i64`, and `capi_form_i64` combine lookup and conversion. They accept
+decimal digits with an optional `+`/`-`, including leading zeroes, and reject
+whitespace, hex, fractional values, trailing bytes, and embedded NULs. Path
+captures remain raw (`%31` is not converted to `1`). Query/form `+` becomes a
+space during decoding; encode a numeric plus sign as `%2B`.
+
+```c
+int64_t page;
+capi_input_result result = capi_query_i64(ctx, "page", 1, 1000, &page);
+if (result == CAPI_INPUT_MISSING) page = 1;
+else if (result == CAPI_INPUT_NO_MEMORY) return;
+else if (result != CAPI_INPUT_FOUND) { capi_text(ctx, 400, "Invalid page\n"); return; }
+```
+
+Every unsuccessful integer conversion zeroes the output when non-NULL. String
+lookups reset their output to `{NULL, 0}` on failure/missing. Input mistakes
+alone do not mark the request failed; the application chooses its 400/415/422
+response. `capi_input_name` provides a static name for each result.
 
 ## Writing a response
 
@@ -204,11 +239,9 @@ where the header documents it.
 ## Server and limits
 
 ```c
-capi_app_limits(app, (capi_limits){
-    .max_header_bytes = 16 * 1024,
-    .max_body_bytes = 1024 * 1024,
-    .max_response_bytes = 8 * 1024 * 1024
-});
+capi_limits limits = capi_limits_default();
+limits.max_arena_bytes = 512 * 1024;
+if (capi_app_limits(app, limits)) { /* handle configuration error */ }
 capi_server *server = capi_server_listen(app, (capi_server_options){
     .host = "127.0.0.1", .port = 8080,
     .max_connections = 4096,
@@ -226,6 +259,10 @@ Host strings are only used during listen setup. Header limits include the
 request line and terminator; at most 64 request headers are accepted.
 Header limits range from 128 bytes to 1 MiB. Body limit 0 permits empty bodies;
 response limits must be nonzero. Overflowing limit combinations are rejected.
+The request arena has its own default 1 MiB budget; `max_arena_bytes = 0`
+selects that default. Reserved blocks, alignment, and block headers count toward
+the budget. Input/response buffers and external application allocations are
+separate. See [arena budgeting](reliability.md#arena-memory-budget).
 
 `capi_server_port` reports the bound port. `capi_server_run` blocks until stopped
 or an event-loop error occurs. `capi_server_stop` wakes the reactor. Stop closes

@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "capi_workers.h"
+#include "capi_async.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <pthread.h>
@@ -23,10 +24,13 @@ typedef struct {
     capi_server *server;
     atomic_bool release;
     atomic_uint initialized, disposed, accepted, started, finished, done, cleaned;
+    unsigned reports, job_reports, timeouts, shutdowns, rejected, errors, late_errors;
+    bool seen_ids[8192];
     bool fail_init;
 } fixture;
 typedef struct { fixture *f; pthread_t thread; } worker_state;
-typedef struct { fixture *f; capi_str body; uint64_t checksum; bool hold, cooperate, fail, accepted; } task;
+typedef struct { fixture *f; capi_str body; uint64_t checksum, request_id; bool hold, cooperate, fail, accepted; } task;
+typedef struct { task *job; capi_ctx *ctx; } cleanup_data;
 typedef struct { unsigned initialized, accepted, started, finished, done, cleaned; size_t outstanding, queued, running; } snapshot;
 
 static void pause_ms(long ms) {
@@ -71,25 +75,32 @@ static void done(capi_ctx *ctx, void *data) {
     CHECK(pthread_equal(t->f->loop, pthread_self()));
     CHECK(capi_data(ctx) == t->f);
     CHECK(!capi_async_available(ctx));
+    CHECK(capi_request_id(ctx) == t->request_id);
     CHECK(checksum(t->body) == t->checksum);
     atomic_fetch_add(&t->f->done, 1);
     if (t->fail) capi_fail(ctx);
     else capi_write(ctx, t->body.data, t->body.len);
 }
 static void cleaned(void *data) {
-    task *t = data;
+    cleanup_data *cleanup = data;
+    task *t = cleanup->job;
     CHECK(pthread_equal(t->f->loop, pthread_self()));
     CHECK(checksum(t->body) == t->checksum);
     if (t->accepted) atomic_fetch_add(&t->f->cleaned, 1);
+    if (capi_str_eq(t->body, "queued timeout"))
+        capi_fail_with(cleanup->ctx, CAPI_ERROR_APPLICATION, "late_cleanup");
 }
 static void submit(capi_ctx *ctx) {
     fixture *f = capi_data(ctx);
     task *t = capi_alloc(ctx, sizeof(*t)); CHECK(t);
     t->f = f; t->body = capi_body(ctx); t->checksum = checksum(t->body); t->accepted = true;
+    t->request_id = capi_request_id(ctx);
     t->hold = capi_str_eq(capi_path(ctx), "/hold") || capi_str_eq(capi_path(ctx), "/cooperate");
     t->cooperate = capi_str_eq(capi_path(ctx), "/cooperate");
     t->fail = capi_str_eq(capi_path(ctx), "/fail");
-    CHECK(capi_defer(ctx, cleaned, t) == 0);
+    cleanup_data *cleanup = capi_alloc(ctx, sizeof(*cleanup)); CHECK(cleanup);
+    *cleanup = (cleanup_data){t, ctx};
+    CHECK(capi_defer(ctx, cleaned, cleanup) == 0);
     capi_work_result rc = capi_work_submit(ctx, f->pool, work, done, t);
     if (rc != CAPI_WORK_OK) { t->accepted = false; capi_text(ctx, 503, "full"); return; }
     atomic_fetch_add(&f->accepted, 1);
@@ -112,6 +123,39 @@ static void stats(capi_ctx *ctx) {
 }
 static void shutdown_server(capi_ctx *ctx) {
     fixture *f = capi_data(ctx); capi_text(ctx, 200, "stopping"); capi_server_stop(f->server);
+}
+static void request_error(uint64_t id, const capi_error *error, void *data) {
+    fixture *f = data;
+    CHECK(pthread_equal(f->loop, pthread_self()));
+    CHECK(id > 0 && id < sizeof(f->seen_ids));
+    if (!strcmp(error->operation, "late_cleanup")) { CHECK(f->seen_ids[id]); ++f->late_errors; }
+    else CHECK(!f->seen_ids[id]);
+    CHECK(error->code == CAPI_ERROR_APPLICATION);
+    ++f->errors;
+}
+static void request_finished(const capi_request_report *report, void *data) {
+    fixture *f = data;
+    CHECK(pthread_equal(f->loop, pthread_self()));
+    CHECK(report->id > 0 && report->id < sizeof(f->seen_ids) && !f->seen_ids[report->id]);
+    f->seen_ids[report->id] = true; ++f->reports;
+    CHECK(report->bytes_sent <= report->response_bytes);
+    if (report->outcome == CAPI_OUTCOME_SENT) CHECK(report->bytes_sent == report->response_bytes && report->bytes_sent > 0);
+    bool job = capi_str_eq(report->path, "/quick") || capi_str_eq(report->path, "/hold") ||
+        capi_str_eq(report->path, "/cooperate") || capi_str_eq(report->path, "/fail") || capi_str_eq(report->path, "/retire");
+    if (!job) return;
+    if (report->status == 503) { ++f->rejected; return; }
+    ++f->job_reports;
+    if (report->outcome == CAPI_OUTCOME_TIMEOUT || report->outcome == CAPI_OUTCOME_SHUTDOWN) {
+        CHECK(report->status == 0 && report->bytes_sent == 0 && report->response_bytes == 0);
+        CHECK(report->error.code == CAPI_ERROR_NONE);
+        CHECK(atomic_load(&f->cleaned) < atomic_load(&f->accepted));
+        if (report->outcome == CAPI_OUTCOME_TIMEOUT) ++f->timeouts;
+        else ++f->shutdowns;
+    } else {
+        CHECK(report->outcome == CAPI_OUTCOME_SENT);
+        CHECK(report->status == 200 || report->status == 500);
+        if (report->status == 500) CHECK(report->error.code == CAPI_ERROR_APPLICATION);
+    }
 }
 
 static void constructors_and_dispatch(void) {
@@ -141,6 +185,7 @@ static uint16_t start_server(bool stress) {
         f.pool = capi_workers_new((capi_workers_options){.threads = stress ? 4U : 1U, .capacity = stress ? 128U : 2U,
             .init = initialize, .dispose = dispose, .data = &f}); CHECK(f.pool);
         capi_app *app = capi_app_new(); CHECK(app);
+        capi_on_error(app, request_error, &f); capi_on_finish(app, request_finished, &f);
         const char *routes[] = {"/quick", "/hold", "/cooperate", "/fail", "/retire"};
         for (size_t i = 0; i < 5; ++i) CHECK(capi_route(app, CAPI_POST, routes[i], submit, &f) == 0);
         CHECK(capi_route(app, CAPI_GET, "/health", health, &f) == 0);
@@ -154,6 +199,9 @@ static uint16_t start_server(bool stress) {
         CHECK(write(startup[1], &port, sizeof(port)) == (ssize_t)sizeof(port)); close(startup[1]);
         CHECK(capi_server_run(f.server) == 0);
         CHECK(atomic_load(&f.accepted) == atomic_load(&f.cleaned));
+        CHECK(f.job_reports == atomic_load(&f.accepted));
+        CHECK(f.reports > f.job_reports);
+        if (!stress) CHECK(f.timeouts == 2 && f.shutdowns == 2 && f.errors == 2 && f.late_errors == 1 && f.rejected == 2);
         if (f.pool) { capi_workers_stats s; capi_workers_get_stats(f.pool, &s); CHECK(s.outstanding == 0); }
         capi_server_free(f.server); capi_workers_free(f.pool); capi_app_free(app);
         CHECK(atomic_load(&f.initialized) == atomic_load(&f.disposed)); exit(0);

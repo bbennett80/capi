@@ -2,24 +2,33 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 static capi_server *server;
-static unsigned long request_id;
 static void stop(int n) { (void)n; capi_server_stop(server); }
 
 static void request_context(capi_ctx *ctx) {
-    unsigned long *id = capi_alloc(ctx, sizeof(*id));
+    uint64_t *id = capi_alloc(ctx, sizeof(*id));
     if (!id) return;
-    *id = ++request_id;
+    *id = capi_request_id(ctx);
     capi_set_state(ctx, id);
     char value[32];
-    snprintf(value, sizeof(value), "%lu", *id);
+    snprintf(value, sizeof(value), "%" PRIu64, *id);
     capi_set_header(ctx, "X-Request-Id", value);
     capi_set_header(ctx, "X-Content-Type-Options", "nosniff");
     capi_next(ctx);
-    capi_str method = capi_request_method(ctx), path = capi_path(ctx);
-    fprintf(stderr, "[%lu] %.*s %.*s -> %d\n", *id, (int)method.len, method.data,
-            (int)path.len, path.data, capi_response_status(ctx));
+}
+
+static void request_finished(const capi_request_report *r, void *data) {
+    (void)data;
+    fprintf(stderr, "[%" PRIu64 "] %.*s %.*s -> %d %s (%" PRIu64 " ms, %zu bytes)\n",
+        r->id, (int)r->method.len, r->method.data ? r->method.data : "",
+        (int)r->path.len, r->path.data ? r->path.data : "", r->status,
+        capi_outcome_name(r->outcome), r->duration_ms, r->bytes_sent);
+}
+static void request_error(uint64_t id, const capi_error *error, void *data) {
+    (void)data;
+    fprintf(stderr, "[%" PRIu64 "] %s in %s: %s\n", id, capi_error_name(error->code), error->operation, error->message);
 }
 
 static void authorize(capi_ctx *ctx) {
@@ -50,7 +59,7 @@ static void greet(capi_ctx *ctx) {
 static void user(capi_ctx *ctx) {
     capi_json(ctx, 200, "{\"id\":");
     capi_json_string(ctx, capi_param(ctx, "id"));
-    capi_printf(ctx, ",\"request_id\":%lu}", *(unsigned long *)capi_state(ctx));
+    capi_printf(ctx, ",\"request_id\":%" PRIu64 "}", *(uint64_t *)capi_state(ctx));
 }
 
 static void echo(capi_ctx *ctx) {
@@ -64,6 +73,8 @@ static void missing(capi_ctx *ctx) { capi_json(ctx, 404, "{\"error\":\"route not
 int main(void) {
     capi_app *app = capi_app_new();
     if (!app) return 1;
+    capi_on_finish(app, request_finished, NULL);
+    capi_on_error(app, request_error, NULL);
     if (capi_use(app, "/", request_context, NULL) ||
         capi_use(app, "/private", authorize, "Bearer local-demo") ||
         capi_route(app, CAPI_GET, "/", index_page, NULL) ||

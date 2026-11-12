@@ -59,12 +59,16 @@ cc -std=c11 -O2 -Iinclude src/*.c examples/hello.c -o hello
   suffixes. Literal segments win over parameters, which win over catch-alls.
   HEAD falls back to GET; OPTIONS and 405 responses include `Allow`.
 - **Middleware that composes.** Call `capi_next(ctx)`; unwind afterward for
-  logging and headers. Prefixes match whole path segments. Short-circuit by returning.
+  common headers. Prefixes match whole path segments. Short-circuit by returning.
+  Finished-request hooks report final outcomes for both sync and async work.
 - **Explicit memory ownership.** Request views reference the input buffer.
   Request allocations come from an aligned, zeroed arena and disappear after dispatch.
   Connection buffers are reused across requests. No per-request routing allocation.
 - **Useful response helpers.** Text, JSON, redirects, binary bodies, formatted
   output, copied headers, and an escaping helper that validates UTF-8.
+- **Mistakes you can diagnose.** Compiler format/return-value checks, named
+  input results, checked integer conversion, structured first-error callbacks,
+  per-app request IDs, finished-request reports, and an arena memory budget.
 - **Optional application libraries.** Native SQLite integration with request
   cleanup and explicit transactions, plus compiled HTML templates with escaping,
   sections, loops, and partials. A bounded worker pool keeps blocking work off
@@ -91,8 +95,10 @@ static void security_headers(capi_ctx *ctx) {
 }
 
 /* During setup: */
-capi_use(app, "/", security_headers, NULL);
-capi_route(app, CAPI_GET, "/users/:id", user, NULL);
+if (capi_use(app, "/", security_headers, NULL) ||
+    capi_route(app, CAPI_GET, "/users/:id", user, NULL)) {
+    /* Handle setup failure; inspect capi_app_error(app). */
+}
 ```
 
 Handlers receive their registration data through `capi_data(ctx)`. Middleware
@@ -135,7 +141,7 @@ cmake --build my-service/build
 ./my-service/build/app
 ```
 
-Installed projects use `find_package(capi 0.3 CONFIG REQUIRED)` and
+Installed projects use `find_package(capi 0.4 CONFIG REQUIRED)` and
 `target_link_libraries(app PRIVATE capi::capi)`. Plain compiler builds can use
 `pkg-config --cflags --libs capi` with the install prefix's `lib/pkgconfig`
 directory on `PKG_CONFIG_PATH`.
@@ -160,7 +166,7 @@ and can be disabled with `-DCAPI_WITH_TEMPLATES=OFF`. Installed apps request the
 components they use:
 
 ```cmake
-find_package(capi 0.3 CONFIG REQUIRED COMPONENTS sqlite templates)
+find_package(capi 0.4 CONFIG REQUIRED COMPONENTS sqlite templates)
 target_link_libraries(app PRIVATE capi::sqlite capi::templates)
 ```
 
@@ -196,6 +202,29 @@ ownership, deadlines, shutdown, and per-worker resources. The
 [SQLite worker example](examples/async_sqlite.c) opens a separate connection per
 worker and returns copied results through event-loop completions.
 
+## Reliability and diagnostics
+
+Use `capi_on_error` to receive the first internal failure and `capi_on_finish`
+to observe final status, outcome, duration, and actual wire bytes sent. Reports
+work for synchronous handlers, background completions, timeouts, and disconnects.
+The [API example](examples/api.c) demonstrates final request logging.
+
+Input helpers distinguish missing fields, bad encoding, unsupported content
+types, invalid numbers, range errors, and allocation failures. For example:
+
+```c
+int64_t id;
+if (capi_param_i64(ctx, "id", 1, INT64_MAX, &id) != CAPI_INPUT_FOUND) {
+    capi_text(ctx, 400, "Invalid ID\n");
+    return;
+}
+```
+
+The request arena defaults to a 1 MiB budget, including block overhead. Configure
+it through `capi_limits_default()` and `limits.max_arena_bytes`. GCC/Clang also
+check `capi_printf` formats and warn about unchecked critical results.
+See the [reliability guide and 0.3 migration notes](docs/reliability.md).
+
 ## Verify and measure
 
 ```sh
@@ -216,7 +245,7 @@ not an independent performance comparison. See [benchmark methodology](docs/perf
 
 ## Scope
 
-capi 0.3 is a compact foundation, with an intentionally small API. Handlers and
+capi 0.4 is a compact foundation, with an intentionally small API. Handlers and
 completions run on one event-loop thread: keep them short and move blocking work
 to an explicitly configured worker pool.
 Scale independent instances behind a proxy. There is no built-in TLS, HTTP/2,
@@ -232,6 +261,7 @@ security audit or a compatibility-stable release.
 
 - [API and ownership guide](docs/api.md)
 - [HTTP behavior and operational model](docs/http.md)
+- [Errors, request reports, and safer APIs](docs/reliability.md)
 - [Performance and benchmarking](docs/performance.md)
 - [Contributing](CONTRIBUTING.md)
 

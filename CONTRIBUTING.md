@@ -27,6 +27,12 @@ work, completion ordering, cancellation with socket reuse, retained input,
 queued-job skipping, initialization failures, concurrent producers, and shutdown.
 ASan and ThreadSanitizer cannot be combined in one build.
 
+The `reliability` tests cover structured errors, first-error preservation,
+request reports, arena budgets, and input conversion boundaries. Compiler
+contract tests verify valid usage and expected compile failures. Allocation
+fault tests compile a separate private core with libc allocation names replaced
+by test wrappers; no fault-injection API or allocator indirection ships in capi.
+
 For fuzzing, use a Clang distribution that includes libFuzzer (Apple's Command
 Line Tools compiler may not). LLVM Clang works on macOS; Linux Clang works in CI.
 

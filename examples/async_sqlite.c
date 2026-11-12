@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     if (capi_route(app, CAPI_GET, "/health", health, NULL) ||
         capi_route(app, CAPI_GET, "/messages", messages, pool) ||
         capi_route(app, CAPI_POST, "/messages", messages, pool) ||
-        capi_app_limits(app, (capi_limits){16384, 16384, 1024 * 1024})) goto fail;
+        capi_app_limits(app, (capi_limits){16384, 16384, 1024 * 1024, 0})) goto fail;
     server = capi_server_listen(app, (capi_server_options){.port = (uint16_t)port});
     if (!server) goto fail;
     signal(SIGINT, stop); signal(SIGTERM, stop);

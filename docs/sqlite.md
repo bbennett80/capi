@@ -22,7 +22,7 @@ Default builds do not search for or link SQLite. Vendored applications link
 `capi::sqlite`; installed applications request the component:
 
 ```cmake
-find_package(capi 0.3 CONFIG REQUIRED COMPONENTS sqlite)
+find_package(capi 0.4 CONFIG REQUIRED COMPONENTS sqlite)
 target_link_libraries(app PRIVATE capi::sqlite)
 ```
 

@@ -9,8 +9,8 @@ typedef struct capi_template capi_template;
 typedef struct { size_t offset; char message[160]; } capi_template_error;
 /* Copies source; compiled templates are immutable and may be shared.
  * Limits: 1 MiB source, 65536 operations, 64 nested sections. */
-capi_template *capi_template_compile(const char *source, size_t len, capi_template_error *error);
-capi_template *capi_template_load(const char *path, capi_template_error *error);
+CAPI_NODISCARD capi_template *capi_template_compile(const char *source, size_t len, capi_template_error *error);
+CAPI_NODISCARD capi_template *capi_template_load(const char *path, capi_template_error *error);
 void capi_template_free(capi_template *view);
 
 typedef struct capi_value capi_value;

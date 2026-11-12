@@ -62,7 +62,8 @@ int capi_sqlite_copy_text(capi_ctx *ctx, sqlite3_stmt *stmt, int column, capi_st
 static void rollback(void *data) {
     capi_sqlite_tx *tx = data;
     if (tx->active && !sqlite3_get_autocommit(tx->db) &&
-        sqlite3_exec(tx->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) capi_fail(tx->ctx);
+        sqlite3_exec(tx->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK)
+        capi_fail_with(tx->ctx, CAPI_ERROR_DATABASE, "capi_sqlite_rollback");
     tx->active = false;
 }
 

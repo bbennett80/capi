@@ -1,4 +1,5 @@
 #include "capi.h"
+#include "capi_async.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,10 +200,10 @@ static void parser(void) {
     const char nul_header[] = "GET / HTTP/1.1\r\nHost: x\r\nX: a\0b\r\n\r\n";
     CHECK(capi_dispatch(app, nul_header, sizeof(nul_header) - 1, &r) == 1);
     CHECK(contains(&r, " 400 ")); capi_result_free(&r);
-    CHECK(capi_app_limits(app, (capi_limits){128, 32, 32}) == 0);
+    CHECK(capi_app_limits(app, (capi_limits){128, 32, 32, 0}) == 0);
     char large[160]; memset(large, 'x', sizeof(large));
     CHECK(capi_dispatch(app, large, sizeof(large), &r) == 1); CHECK(contains(&r, " 431 ")); capi_result_free(&r);
-    CHECK(capi_app_limits(app, (capi_limits){0, 0, 0}) == -1);
+    CHECK(capi_app_limits(app, (capi_limits){0, 0, 0, 0}) == -1);
     capi_app_free(app);
 }
 
@@ -236,7 +237,7 @@ static void responses(void) {
     CHECK(capi_route(app, CAPI_GET, "/arena", arena, NULL) == 0);
     capi_result a = send_request(app, "GET /arena HTTP/1.1\r\nHost: x\r\n\r\n", 200);
     body_is(&a, "arena"); capi_result_free(&a);
-    CHECK(capi_app_limits(app, (capi_limits){16384, 1024, 32}) == 0);
+    CHECK(capi_app_limits(app, (capi_limits){16384, 1024, 32, 0}) == 0);
     capi_result r = send_request(app, "GET /overflow HTTP/1.1\r\nHost: x\r\n\r\n", 500); capi_result_free(&r);
     capi_app_free(app);
 }

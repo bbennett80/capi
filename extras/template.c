@@ -251,11 +251,11 @@ static int render_range(ct_render *r, const capi_template *view, size_t start, s
 int capi_render_with(capi_ctx *ctx, int status, const capi_template *view, const capi_value *data,
                      const capi_partial *partials, size_t count) {
     if (!ctx) return -1;
-    if (!view || !data || (count && !partials)) { capi_fail(ctx); return -1; }
+    if (!view || !data || (count && !partials)) { capi_fail_with(ctx, CAPI_ERROR_ARGUMENT, "capi_render"); return -1; }
     if (capi_html(ctx, status, "")) return -1;
     ct_frame frame = {data, NULL};
     ct_render renderer = {ctx, partials, count, CT_RENDER_BUDGET};
-    if (render_range(&renderer, view, 0, view->count, &frame, 0)) { capi_fail(ctx); return -1; }
+    if (render_range(&renderer, view, 0, view->count, &frame, 0)) { capi_fail_with(ctx, CAPI_ERROR_TEMPLATE, "capi_render"); return -1; }
     return 0;
 }
 int capi_render(capi_ctx *ctx, int status, const capi_template *view, const capi_value *data) {

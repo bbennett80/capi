@@ -95,3 +95,19 @@ single run is a sanity check, not a statistically controlled comparison. In the
 background-work example, a health request completed in 0.652 ms while a concurrent
 artificially delayed echo took 268 ms, confirming that the delay stayed off the
 event loop. CPU/storage-heavy real workloads still need their own measurements.
+
+For 0.4, all ten suites passed in native, poll, shared, ASan/UBSan, and separate
+ThreadSanitizer builds. The dependency-free core-only build passed its five
+suites. New checks cover compiler diagnostics, allocation fault injection,
+arena budgets, integer conversion, first-error preservation, and exactly-once
+transport reports, including cancellation followed by late cleanup errors.
+Installed static/shared consumers and a freshly scaffolded application compiled;
+the shared libraries use the distinct 0.4 ABI name. Direct C11 compilation of
+the core and hello example also succeeded.
+
+HTTP/input fuzzing completed 523,031 inputs and template fuzzing completed
+473,796 inputs, each in 21 seconds, without a crash or sanitizer diagnostic.
+A short Release/kqueue loopback run (64 connections, 100,000 requests) measured
+150,387 requests/s, p50 0.359 ms, p95 0.495 ms, and p99 0.736 ms. This remains
+a single local sanity check, not a controlled performance comparison. These
+checks ran on macOS; the Linux CI job was not run locally.

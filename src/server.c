@@ -37,6 +37,7 @@ typedef struct cp_connection {
     size_t sent, consumed;
     uint64_t activity, started;
     capi_ctx *ctx;
+    capi_outcome failure;
 } cp_connection;
 typedef struct { uint64_t key; bool read, write, error; } cp_event;
 
@@ -81,7 +82,7 @@ bool capi_async_available(const capi_ctx *ctx) {
 capi_async *capi_async_begin(capi_ctx *ctx) {
     if (!capi_async_available(ctx)) { errno = EAGAIN; return NULL; }
     capi_async *pending = calloc(1, sizeof(*pending));
-    if (!pending) { capi_fail(ctx); return NULL; }
+    if (!pending) { cp_fail(ctx, CAPI_ERROR_OUT_OF_MEMORY, "capi_async_begin", ENOMEM); return NULL; }
     atomic_init(&pending->cancelled, false);
     pending->server = ctx->server;
     pending->connection = ctx->connection;
@@ -218,7 +219,7 @@ static int wait_events(capi_server *s, cp_event *events, int timeout) {
 #endif
 }
 
-static void connection_close(capi_server *s, cp_connection *c) {
+static void connection_close(capi_server *s, cp_connection *c, capi_outcome outcome) {
     if (c->fd < 0) return;
     unwatch(s, c->fd);
     close(c->fd);
@@ -231,8 +232,10 @@ static void connection_close(capi_server *s, cp_connection *c) {
         pending->body = c->body;
         pending->ctx->output = &pending->body;
         c->input = (cp_buf){0}; c->body = (cp_buf){0};
+        cp_request_observe(pending->ctx, outcome, c->sent, c->wire.len);
     } else if (c->ctx) {
         cp_request_dispose(c->ctx);
+        cp_request_observe(c->ctx, outcome, c->sent, c->wire.len);
         free(c->ctx);
     }
     c->ctx = NULL;
@@ -323,7 +326,7 @@ void capi_server_stop(capi_server *s) {
 
 void capi_server_free(capi_server *s) {
     if (!s) return;
-    if (s->connections) for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i]);
+    if (s->connections) for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i], CAPI_OUTCOME_SHUTDOWN);
     if (s->listener >= 0) close(s->listener);
     if (s->wake[0] >= 0) close(s->wake[0]);
     if (s->wake[1] >= 0) close(s->wake[1]);
@@ -354,23 +357,42 @@ static void accept_connections(capi_server *s) {
         if (++c->generation == 0) ++c->generation;
         c->writing = c->closing = c->peer_eof = false;
         c->sent = c->consumed = 0; c->started = 0; c->activity = cp_now_ms();
+        c->failure = CAPI_OUTCOME_ERROR;
         ++s->active;
         s->cursor = (s->cursor + 1) % s->options.max_connections;
-        if (watch(s, fd, key_for(s, c), false, true)) connection_close(s, c);
+        if (watch(s, fd, key_for(s, c), false, true)) connection_close(s, c, CAPI_OUTCOME_ERROR);
     }
 }
 
 /* A connection only reads OR writes: bounded buffering and natural backpressure.
  * Pipelined bytes already read are dispatched after the previous response drains. */
+static void request_memory_failure(capi_server *s, cp_connection *c, const char *operation) {
+    if (c->ctx && c->ctx->active && !c->ctx->observed) {
+        cp_fail(c->ctx, CAPI_ERROR_OUT_OF_MEMORY, operation, ENOMEM);
+    } else {
+        /* Report even when allocation of the persistent context/input failed.
+         * Observers borrow this stack snapshot; no allocation is needed. */
+        capi_ctx snapshot = {.app = s->app, .active = true, .started_ms = c->started};
+        cp_fail(&snapshot, CAPI_ERROR_OUT_OF_MEMORY, operation, ENOMEM);
+        cp_request_observe(&snapshot, CAPI_OUTCOME_ERROR, 0, 0);
+    }
+    c->failure = CAPI_OUTCOME_ERROR;
+}
 static int process_input(capi_server *s, cp_connection *c) {
     if (!c->input.len) return 0;
-    if (!c->ctx) { c->ctx = calloc(1, sizeof(*c->ctx)); if (!c->ctx) return -1; }
-    int result = cp_request_begin(c->ctx, s->app, c->input.data, c->input.len, &c->body, &c->consumed, s, c);
+    c->failure = CAPI_OUTCOME_ERROR;
+    if (!c->ctx) {
+        c->ctx = calloc(1, sizeof(*c->ctx));
+        if (!c->ctx) { request_memory_failure(s, c, "request_context"); return -1; }
+    }
+    int result = cp_request_begin(c->ctx, s->app, c->input.data, c->input.len, &c->body, &c->consumed, s, c, c->started);
     if (result == 1) {
         if (c->ctx->async) { unwatch(s, c->fd); return 1; }
         if (cp_request_finish(c->ctx, &c->wire, &c->closing) < 0) return -1;
         c->writing = true; c->sent = 0;
-        if (watch(s, c->fd, key_for(s, c), true, false)) return -1;
+        if (watch(s, c->fd, key_for(s, c), true, false)) {
+            cp_fail(c->ctx, CAPI_ERROR_IO, "reactor_watch", errno); return -1;
+        }
     }
     return result;
 }
@@ -399,15 +421,25 @@ static void drain_completions(capi_server *s) {
             if (pending->done) pending->done(ctx, pending->data);
             ctx->data = NULL;
             ctx->async = NULL;
-            if (cp_request_finish(ctx, &c->wire, &c->closing) < 0) connection_close(s, c);
+            if (cp_request_finish(ctx, &c->wire, &c->closing) < 0) connection_close(s, c, CAPI_OUTCOME_ERROR);
             else {
                 c->writing = true; c->sent = 0; c->activity = cp_now_ms();
-                if (watch(s, c->fd, key_for(s, c), true, true)) connection_close(s, c);
+                if (watch(s, c->fd, key_for(s, c), true, true)) {
+                    cp_fail(ctx, CAPI_ERROR_IO, "reactor_watch", errno);
+                    connection_close(s, c, CAPI_OUTCOME_ERROR);
+                }
             }
         }
         --s->in_flight;
         free(pending);
     }
+}
+
+static int io_failure(cp_connection *c, const char *operation, int error) {
+    c->failure = error == ECONNRESET || error == EPIPE ? CAPI_OUTCOME_CLIENT_CLOSED : CAPI_OUTCOME_ERROR;
+    if (c->failure == CAPI_OUTCOME_ERROR && c->ctx && c->ctx->active && !c->ctx->observed)
+        cp_fail(c->ctx, CAPI_ERROR_IO, operation, error);
+    return -1;
 }
 
 static int read_connection(capi_server *s, cp_connection *c) {
@@ -422,12 +454,14 @@ static int read_connection(capi_server *s, cp_connection *c) {
         ssize_t n = recv(c->fd, bytes, amount, 0);
         if (n < 0) {
             if (errno == EINTR) continue;
-            return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
+            return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : io_failure(c, "recv", errno);
         }
-        if (!n) { c->peer_eof = true; return -1; }
+        if (!n) { c->peer_eof = true; c->failure = CAPI_OUTCOME_CLIENT_CLOSED; return -1; }
         c->activity = cp_now_ms();
         if (!c->started) c->started = c->activity;
-        if (cp_buf_append(&c->input, bytes, (size_t)n, limit)) return -1;
+        if (cp_buf_append(&c->input, bytes, (size_t)n, limit)) {
+            request_memory_failure(s, c, "receive_buffer"); return -1;
+        }
         budget -= (size_t)n;
         int result = process_input(s, c);
         if (result) return result < 0 ? -1 : 0;
@@ -447,19 +481,21 @@ static int write_connection(capi_server *s, cp_connection *c) {
 #endif
         if (n < 0) {
             if (errno == EINTR) continue;
-            return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
+            return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : io_failure(c, "send", errno);
         }
-        if (!n) return -1;
+        if (!n) return io_failure(c, "send", EIO);
         c->activity = cp_now_ms(); c->sent += (size_t)n; budget -= (size_t)n;
         if (c->sent != c->wire.len) continue;
-        if (c->closing || s->stop) return -1;
+        cp_request_observe(c->ctx, CAPI_OUTCOME_SENT, c->sent, c->wire.len);
+        if (c->closing || s->stop) { c->failure = CAPI_OUTCOME_SENT; return -1; }
         size_t remaining = c->input.len - c->consumed;
         if (remaining) memmove(c->input.data, c->input.data + c->consumed, remaining);
         c->input.len = remaining; c->wire.len = c->body.len = 0;
+        c->sent = c->consumed = 0; c->failure = CAPI_OUTCOME_ERROR;
         c->writing = false; c->started = remaining ? c->activity : 0;
         int result = process_input(s, c);
         if (result < 0) return -1;
-        if (!result && watch(s, c->fd, key_for(s, c), false, false)) return -1;
+        if (!result && watch(s, c->fd, key_for(s, c), false, false)) return io_failure(c, "reactor_watch", errno);
     }
     return 0;
 }
@@ -477,10 +513,10 @@ int capi_server_run(capi_server *s) {
             stopping = now;
             unwatch(s, s->listener); close(s->listener); s->listener = -1;
             for (size_t i = 0; i < s->options.max_connections; ++i)
-                if (s->connections[i].fd >= 0 && !s->connections[i].writing) connection_close(s, &s->connections[i]);
+                if (s->connections[i].fd >= 0 && !s->connections[i].writing) connection_close(s, &s->connections[i], CAPI_OUTCOME_SHUTDOWN);
         }
         if (stopping && now - stopping >= s->options.shutdown_timeout_ms)
-            for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i]);
+            for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i], CAPI_OUTCOME_SHUTDOWN);
         drain_completions(s);
         if (stopping && !s->active && !s->in_flight && !atomic_load_explicit(&s->posting, memory_order_acquire)) break;
         cp_event events[CP_BATCH];
@@ -492,9 +528,14 @@ int capi_server_run(capi_server *s) {
         } else count = wait_events(s, events, s->ready ? 0 : 50);
         if (count < 0) {
             if (errno == EINTR) continue;
+            int error = errno;
             result = server_error(s, "event wait"); reactor_failed = true;
             capi_server_stop(s);
-            for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i]);
+            for (size_t i = 0; i < s->options.max_connections; ++i) {
+                cp_connection *c = &s->connections[i];
+                if (c->fd >= 0 && c->ctx && !c->ctx->observed) cp_fail(c->ctx, CAPI_ERROR_IO, "event_wait", error);
+                connection_close(s, c, CAPI_OUTCOME_ERROR);
+            }
             continue;
         }
         for (int i = 0; i < count; ++i) {
@@ -506,9 +547,15 @@ int capi_server_run(capi_server *s) {
             cp_connection *c = &s->connections[slot];
             if (c->fd < 0 || c->generation != generation) continue;
             if (c->ctx && c->ctx->async) continue;
-            if (s->stop && !c->writing) { connection_close(s, c); continue; }
-            if (e.error || (e.read && !c->writing && read_connection(s, c) < 0) ||
-                (e.write && c->writing && write_connection(s, c) < 0)) connection_close(s, c);
+            if (s->stop && !c->writing) { connection_close(s, c, CAPI_OUTCOME_SHUTDOWN); continue; }
+            if (e.error) {
+                int error = EIO; socklen_t size = sizeof(error);
+                if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &error, &size) || !error) error = EIO;
+                io_failure(c, "socket_event", error);
+                connection_close(s, c, c->failure); continue;
+            }
+            if ((e.read && !c->writing && read_connection(s, c) < 0) ||
+                (e.write && c->writing && write_connection(s, c) < 0)) connection_close(s, c, c->failure);
         }
         now = cp_now_ms();
         if (now < next_sweep) continue;
@@ -517,14 +564,14 @@ int capi_server_run(capi_server *s) {
             cp_connection *c = &s->connections[i];
             if (c->fd < 0) continue;
             if (c->ctx && c->ctx->async) {
-                if (now - c->ctx->async->started >= s->options.async_timeout_ms) connection_close(s, c);
+                if (now - c->ctx->async->started >= s->options.async_timeout_ms) connection_close(s, c, CAPI_OUTCOME_TIMEOUT);
                 continue;
             }
             if (now - c->activity >= s->options.idle_timeout_ms ||
-                (!c->writing && c->started && now - c->started >= s->options.request_timeout_ms)) connection_close(s, c);
+                (!c->writing && c->started && now - c->started >= s->options.request_timeout_ms)) connection_close(s, c, CAPI_OUTCOME_TIMEOUT);
         }
     }
-    for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i]);
+    for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i], CAPI_OUTCOME_SHUTDOWN);
     s->running = false;
     return result;
 }

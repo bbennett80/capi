@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include <limits.h>
+#include <errno.h>
 
 int cp_buf_append(cp_buf *b, const void *data, size_t len, size_t limit) {
     if (b->len > limit || len > limit - b->len || (len && !data)) return -1;
@@ -66,9 +67,13 @@ static char *copystr(const char *s, size_t len) {
     return p;
 }
 
+capi_limits capi_limits_default(void) {
+    return (capi_limits){16384, 1024 * 1024, 8 * 1024 * 1024, 1024 * 1024};
+}
+
 capi_app *capi_app_new(void) {
     capi_app *app = calloc(1, sizeof(*app));
-    if (app) app->limits = (capi_limits){16384, 1024 * 1024, 8 * 1024 * 1024};
+    if (app) { app->limits = capi_limits_default(); atomic_init(&app->next_id, 0); }
     return app;
 }
 
@@ -106,6 +111,7 @@ const char *capi_app_error(const capi_app *app) { return app ? app->error : "nul
 
 int capi_app_limits(capi_app *app, capi_limits limits) {
     if (!app) return -1;
+    if (!limits.max_arena_bytes) limits.max_arena_bytes = capi_limits_default().max_arena_bytes;
     if (limits.max_header_bytes < 128 || limits.max_header_bytes > 1024 * 1024 ||
         limits.max_body_bytes > SIZE_MAX - limits.max_header_bytes ||
         !limits.max_response_bytes || limits.max_response_bytes > SIZE_MAX - limits.max_header_bytes - 1024)
@@ -217,18 +223,25 @@ void capi_not_found(capi_app *app, capi_handler handler, void *data) {
 void *capi_alloc(capi_ctx *ctx, size_t bytes) {
     if (!ctx || !bytes) return NULL;
     size_t alignment = alignof(max_align_t);
-    if (bytes > SIZE_MAX - alignment) { ctx->failed = true; return NULL; }
+    if (bytes > SIZE_MAX - alignment) { cp_fail(ctx, CAPI_ERROR_MEMORY_LIMIT, "capi_alloc", 0); return NULL; }
     size_t size = (bytes + alignment - 1) / alignment * alignment;
     cp_arena *a = ctx->arena;
     if (!a || size > a->cap - a->used) {
+        size_t remaining = ctx->app->limits.max_arena_bytes - ctx->arena_reserved;
+        if (remaining <= sizeof(*a) || size > remaining - sizeof(*a)) {
+            cp_fail(ctx, CAPI_ERROR_MEMORY_LIMIT, "capi_alloc", 0); return NULL;
+        }
         size_t capacity = size < 2048 ? 2048 : size;
-        if (capacity > SIZE_MAX - sizeof(*a)) { ctx->failed = true; return NULL; }
+        if (capacity > remaining - sizeof(*a)) capacity = remaining - sizeof(*a);
+        capacity -= capacity % alignment;
         a = malloc(sizeof(*a) + capacity);
-        if (!a) { ctx->failed = true; return NULL; }
+        if (!a) { cp_fail(ctx, CAPI_ERROR_OUT_OF_MEMORY, "capi_alloc", ENOMEM); return NULL; }
         a->next = ctx->arena;
         a->used = 0;
         a->cap = capacity;
         ctx->arena = a;
+        ctx->arena_reserved += sizeof(*a) + capacity;
+        ctx->arena_peak = ctx->arena_reserved;
     }
     void *p = a->data + a->used;
     a->used += size;
@@ -240,10 +253,8 @@ void cp_arena_free(cp_arena *a) {
     while (a) { cp_arena *next = a->next; free(a); a = next; }
 }
 
-void capi_fail(capi_ctx *ctx) { if (ctx) ctx->failed = true; }
-
 int capi_defer(capi_ctx *ctx, capi_cleanup_fn cleanup, void *data) {
-    if (!ctx || !cleanup) { capi_fail(ctx); return -1; }
+    if (!ctx || !cleanup) { cp_fail(ctx, CAPI_ERROR_ARGUMENT, "capi_defer", 0); return -1; }
     cp_cleanup *entry = capi_alloc(ctx, sizeof(*entry));
     if (!entry) return -1;
     *entry = (cp_cleanup){cleanup, data, ctx->cleanup};
@@ -268,92 +279,35 @@ capi_str capi_param(const capi_ctx *ctx, const char *name) {
     return (capi_str){NULL, 0};
 }
 
-static int hex(unsigned char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static int decode(const char *p, size_t len, char *out, size_t *outlen) {
-    size_t n = 0;
-    for (size_t i = 0; i < len; ++i) {
-        unsigned char c = (unsigned char)p[i];
-        if (c == '%') {
-            if (i + 2 >= len) return -1;
-            int a = hex((unsigned char)p[i + 1]), b = hex((unsigned char)p[i + 2]);
-            if (a < 0 || b < 0) return -1;
-            c = (unsigned char)(a * 16 + b);
-            i += 2;
-        } else if (c == '+') c = ' ';
-        out[n++] = (char)c;
-    }
-    out[n] = 0;
-    *outlen = n;
-    return 0;
-}
-
-static int pairs(capi_ctx *ctx, capi_str input, const char *name, capi_str *value) {
-    if (!name || !value) return -1;
-    *value = (capi_str){NULL, 0};
-    size_t at = 0;
-    while (at < input.len) {
-        size_t end = at, eq;
-        while (end < input.len && input.data[end] != '&') ++end;
-        eq = at;
-        while (eq < end && input.data[eq] != '=') ++eq;
-        size_t keylen = 0;
-        char *key = capi_alloc(ctx, eq - at + 1);
-        if (!key || decode(input.data + at, eq - at, key, &keylen)) return -1;
-        if (strlen(name) == keylen && memcmp(name, key, keylen) == 0) {
-            size_t start = eq < end ? eq + 1 : end, len = 0;
-            char *p = capi_alloc(ctx, end - start + 1);
-            if (!p || decode(input.data + start, end - start, p, &len)) return -1;
-            *value = (capi_str){p, len};
-            return 1;
-        }
-        at = end + 1;
-    }
-    return 0;
-}
-
-int capi_query(capi_ctx *ctx, const char *name, capi_str *value) {
-    return pairs(ctx, ctx->query, name, value);
-}
-
-int capi_form(capi_ctx *ctx, const char *name, capi_str *value) {
-    if (!name || !value) return -1;
-    *value = (capi_str){NULL, 0};
-    capi_str type = capi_header(ctx, "Content-Type");
-    size_t end = 0;
-    while (end < type.len && type.data[end] != ';') ++end;
-    while (end && (type.data[end - 1] == ' ' || type.data[end - 1] == '\t')) --end;
-    if (!cp_caseeq((capi_str){type.data, end}, "application/x-www-form-urlencoded")) return -1;
-    return pairs(ctx, ctx->body, name, value);
-}
-
 void capi_status(capi_ctx *ctx, int status) {
-    if (status < 200 || status > 599) ctx->failed = true;
+    if (status < 200 || status > 599) cp_fail(ctx, CAPI_ERROR_STATUS, "capi_status", 0);
     else ctx->status = status;
 }
 int capi_response_status(const capi_ctx *ctx) { return ctx->status; }
 
 int capi_set_header(capi_ctx *ctx, const char *name, const char *value) {
-    if (!name || !*name || !value) goto fail;
+    if (ctx->failed) return -1;
+    capi_error_code error = CAPI_ERROR_HEADER;
+    if (!name || !*name || !value) { error = CAPI_ERROR_ARGUMENT; goto fail; }
     for (const char *p = name; *p; ++p) if (!cp_token((unsigned char)*p)) goto fail;
     for (const char *p = value; *p; ++p)
         if (((unsigned char)*p < 32 && *p != '\t') || (unsigned char)*p == 127) goto fail;
     capi_str n = {name, strlen(name)};
     if (cp_caseeq(n, "content-length") || cp_caseeq(n, "connection") ||
-        cp_caseeq(n, "transfer-encoding") || cp_caseeq(n, "trailer") || cp_caseeq(n, "upgrade")) goto fail;
+        cp_caseeq(n, "transfer-encoding") || cp_caseeq(n, "trailer") || cp_caseeq(n, "upgrade")) {
+        error = CAPI_ERROR_RESERVED_HEADER; goto fail;
+    }
     size_t slot = ctx->nresponse_headers;
     for (size_t i = 0; i < ctx->nresponse_headers; ++i)
         if (cp_caseeq(ctx->response_headers[i].name, name)) { slot = i; break; }
+    error = CAPI_ERROR_HEADER_LIMIT;
     if (slot == CAPI_MAX_HEADERS) goto fail;
-    size_t nl = strlen(name), vl = strlen(value), total = nl + vl + 4;
+    size_t nl = strlen(name), vl = strlen(value), limit = ctx->app->limits.max_header_bytes;
+    if (nl > limit - 4 || vl > limit - 4 - nl) goto fail;
+    size_t total = nl + vl + 4;
     for (size_t i = 0; i < ctx->nresponse_headers; ++i)
         if (i != slot) total += ctx->response_headers[i].name.len + ctx->response_headers[i].value.len + 4;
-    if (total > ctx->app->limits.max_header_bytes) goto fail;
+    if (total > limit) goto fail;
     char *nc = capi_alloc(ctx, nl + 1), *vc = capi_alloc(ctx, vl + 1);
     if (!nc || !vc) goto fail;
     memcpy(nc, name, nl + 1); memcpy(vc, value, vl + 1);
@@ -361,24 +315,31 @@ int capi_set_header(capi_ctx *ctx, const char *name, const char *value) {
     if (slot == ctx->nresponse_headers) ++ctx->nresponse_headers;
     return 0;
 fail:
-    ctx->failed = true; return -1;
+    cp_fail(ctx, error, "capi_set_header", 0); return -1;
 }
 
 int capi_write(capi_ctx *ctx, const void *bytes, size_t len) {
-    if (ctx->failed || cp_buf_append(ctx->output, bytes, len, ctx->app->limits.max_response_bytes)) {
-        ctx->failed = true; return -1;
+    if (ctx->failed) return -1;
+    if (len && !bytes) { cp_fail(ctx, CAPI_ERROR_ARGUMENT, "capi_write", 0); return -1; }
+    if (len > ctx->app->limits.max_response_bytes - ctx->output->len) {
+        cp_fail(ctx, CAPI_ERROR_RESPONSE_LIMIT, "capi_write", 0); return -1;
+    }
+    if (cp_buf_append(ctx->output, bytes, len, ctx->app->limits.max_response_bytes)) {
+        cp_fail(ctx, CAPI_ERROR_OUT_OF_MEMORY, "capi_write", ENOMEM); return -1;
     }
     return 0;
 }
 
 int capi_printf(capi_ctx *ctx, const char *format, ...) {
     va_list ap, copy;
-    if (!format) { ctx->failed = true; return -1; }
+    if (ctx->failed) return -1;
+    if (!format) { cp_fail(ctx, CAPI_ERROR_ARGUMENT, "capi_printf", 0); return -1; }
     va_start(ap, format); va_copy(copy, ap);
     int n = vsnprintf(NULL, 0, format, copy);
     va_end(copy);
-    if (n < 0 || (size_t)n > ctx->app->limits.max_response_bytes - ctx->output->len) {
-        va_end(ap); ctx->failed = true; return -1;
+    if (n < 0) { va_end(ap); cp_fail(ctx, CAPI_ERROR_FORMAT, "capi_printf", 0); return -1; }
+    if ((size_t)n > ctx->app->limits.max_response_bytes - ctx->output->len) {
+        va_end(ap); cp_fail(ctx, CAPI_ERROR_RESPONSE_LIMIT, "capi_printf", 0); return -1;
     }
     char local[512], *p = local;
     if ((size_t)n >= sizeof(local)) p = capi_alloc(ctx, (size_t)n + 1);
@@ -398,7 +359,7 @@ int capi_text(capi_ctx *ctx, int status, const char *text) { return typed(ctx, s
 int capi_html(capi_ctx *ctx, int status, const char *html) { return typed(ctx, status, "text/html; charset=utf-8", html); }
 int capi_json(capi_ctx *ctx, int status, const char *json) { return typed(ctx, status, "application/json; charset=utf-8", json); }
 int capi_redirect(capi_ctx *ctx, int status, const char *location) {
-    if (status < 300 || status > 399 || status == 304) { ctx->failed = true; return -1; }
+    if (status < 300 || status > 399 || status == 304) { cp_fail(ctx, CAPI_ERROR_STATUS, "capi_redirect", 0); return -1; }
     capi_status(ctx, status);
     ctx->output->len = 0;
     return capi_set_header(ctx, "Location", location);
@@ -531,14 +492,17 @@ static int serialize(capi_ctx *ctx, cp_buf *wire) {
 }
 
 int cp_request_begin(capi_ctx *request, capi_app *app, const char *data, size_t len,
-                     cp_buf *body, size_t *consumed, capi_server *server, void *connection) {
+                     cp_buf *body, size_t *consumed, capi_server *server, void *connection, uint64_t started_ms) {
     *request = (capi_ctx){0};
     capi_ctx *ctx = request;
     ctx->app = app; ctx->output = body; ctx->status = 200;
     ctx->server = server; ctx->connection = connection;
+    ctx->active = true;
+    ctx->started_ms = started_ms ? started_ms : cp_now_ms();
     body->len = 0;
     int parsed = cp_parse(ctx, data, len, consumed);
     if (!parsed) return 0;
+    cp_request_identify(ctx);
     if (parsed != 1) {
         ctx->close = true;
         *consumed = len;
@@ -576,6 +540,7 @@ void cp_request_dispose(capi_ctx *ctx) {
     run_cleanup(ctx);
     cp_arena_free(ctx->arena);
     ctx->arena = NULL;
+    ctx->arena_reserved = 0;
 }
 
 int cp_request_finish(capi_ctx *ctx, cp_buf *wire, bool *close) {
@@ -583,19 +548,25 @@ int cp_request_finish(capi_ctx *ctx, cp_buf *wire, bool *close) {
     run_cleanup(ctx);
     if (ctx->failed) {
         ctx->output->len = 0; ctx->nresponse_headers = 0; ctx->status = 500; ctx->close = true;
-        if (cp_buf_append(ctx->output, "Internal Server Error\n", 22, SIZE_MAX)) { cp_request_dispose(ctx); return -1; }
+        if (cp_buf_append(ctx->output, "Internal Server Error\n", 22, SIZE_MAX)) {
+            cp_fail(ctx, CAPI_ERROR_OUT_OF_MEMORY, "serialize_error", ENOMEM); cp_request_dispose(ctx); return -1;
+        }
     }
     *close = ctx->close;
     int result = serialize(ctx, wire);
+    if (result) cp_fail(ctx, CAPI_ERROR_OUT_OF_MEMORY, "serialize_response", ENOMEM);
+    else ctx->response_ready = true;
     cp_request_dispose(ctx);
     return result ? -1 : 1;
 }
 
 int cp_process(capi_app *app, const char *data, size_t len, cp_buf *body, cp_buf *wire, size_t *consumed, bool *close) {
     capi_ctx ctx;
-    int parsed = cp_request_begin(&ctx, app, data, len, body, consumed, NULL, NULL);
+    int parsed = cp_request_begin(&ctx, app, data, len, body, consumed, NULL, NULL, 0);
     if (!parsed) return 0;
-    return cp_request_finish(&ctx, wire, close);
+    int result = cp_request_finish(&ctx, wire, close);
+    cp_request_observe(&ctx, result < 0 ? CAPI_OUTCOME_ERROR : CAPI_OUTCOME_DISPATCHED, 0, wire->len);
+    return result;
 }
 
 int capi_dispatch(capi_app *app, const void *request, size_t len, capi_result *result) {

@@ -87,7 +87,7 @@ static void partials_and_limits(void) {
     f.data = capi_value_string((capi_str){NULL, 1});
     r = request_text(app, "GET / HTTP/1.1\r\nHost: x\r\n\r\n", 500); capi_result_free(&r);
     f.data = capi_value_text("too much output");
-    CHECK(capi_app_limits(app, (capi_limits){16384, 1024, 4}) == 0);
+    CHECK(capi_app_limits(app, (capi_limits){16384, 1024, 4, 0}) == 0);
     r = request_text(app, "GET / HTTP/1.1\r\nHost: x\r\n\r\n", 500); capi_result_free(&r);
     capi_template_free(f.view); capi_app_free(app);
 }

@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "capi.h"
+#include "capi_async.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <signal.h>
@@ -16,6 +17,7 @@ static unsigned checks;
 static pid_t child;
 static capi_server *server;
 static char large_body[256 * 1024];
+static unsigned reported_sent, reported_timeout, reported_closed;
 #define CHECK(expr) do { ++checks; if (!(expr)) { fprintf(stderr, "%s:%d: %s (errno %d)\n", __FILE__, __LINE__, #expr, errno); if (child > 0) { kill(child, SIGKILL); waitpid(child, NULL, 0); } exit(1); } } while (0)
 static void stop(int n) { (void)n; capi_server_stop(server); }
 static void hello(capi_ctx *ctx) { capi_text(ctx, 200, "hello"); }
@@ -36,6 +38,19 @@ static void deferred(capi_ctx *ctx) {
 static void echo(capi_ctx *ctx) { capi_str body = capi_body(ctx); capi_write(ctx, body.data, body.len); }
 static void large(capi_ctx *ctx) { capi_write(ctx, large_body, sizeof(large_body)); }
 static void shutdown_handler(capi_ctx *ctx) { large(ctx); capi_server_stop(server); }
+static void observe(const capi_request_report *report, void *data) {
+    (void)data;
+    CHECK(report->id != 0);
+    if (report->outcome == CAPI_OUTCOME_SENT) {
+        CHECK(report->status == 200 || report->status == 400);
+        CHECK(report->response_bytes == report->bytes_sent && report->bytes_sent > 0);
+        ++reported_sent;
+    } else if (report->outcome == CAPI_OUTCOME_TIMEOUT) {
+        CHECK(report->status == 0 && report->bytes_sent == 0); ++reported_timeout;
+    } else if (report->outcome == CAPI_OUTCOME_CLIENT_CLOSED) {
+        CHECK(report->status == 0 && report->bytes_sent == 0); ++reported_closed;
+    } else CHECK(report->outcome == CAPI_OUTCOME_SHUTDOWN);
+}
 static void pause_ms(long ms) {
     struct timespec duration = {ms / 1000, ms % 1000 * 1000000};
     while (nanosleep(&duration, &duration) && errno == EINTR) {}
@@ -91,6 +106,7 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
     memset(large_body, 'z', sizeof(large_body));
     capi_app *app = capi_app_new(); CHECK(app);
+    capi_on_finish(app, observe, NULL);
     CHECK(capi_route(app, CAPI_GET, "/", hello, NULL) == 0);
     CHECK(capi_route(app, CAPI_POST, "/echo", echo, NULL) == 0);
     CHECK(capi_route(app, CAPI_GET, "/large", large, NULL) == 0);
@@ -109,6 +125,7 @@ int main(void) {
         close(startup[1]);
         signal(SIGTERM, stop);
         int result = capi_server_run(server);
+        CHECK(reported_sent > 100 && reported_timeout > 0 && reported_closed > 0);
         capi_server_free(server); capi_app_free(app); exit(result ? 1 : 0);
     }
     close(startup[1]);
@@ -154,6 +171,11 @@ int main(void) {
     fd = connect_to(port); pause_ms(500); CHECK(recv(fd, output, sizeof(output), 0) == 0); close(fd);
     fd = connect_to(port); send_bytes(fd, "GET / ", 6); pause_ms(110); send_bytes(fd, "H", 1);
     pause_ms(120); CHECK(recv(fd, output, sizeof(output), 0) == 0); close(fd);
+
+    fd = connect_to(port);
+    const char aborted[] = "GET /aborted HTTP/1.1\r\nHost: x\r\n";
+    send_bytes(fd, aborted, sizeof(aborted) - 1); CHECK(shutdown(fd, SHUT_WR) == 0);
+    CHECK(recv(fd, output, sizeof(output), 0) == 0); close(fd);
 
     fd = connect_to(port);
     const char *malformed = "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nx";

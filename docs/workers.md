@@ -25,7 +25,7 @@ CMake for system threads. The core does not link or create a worker pool.
 Installed consumers use:
 
 ```cmake
-find_package(capi 0.3 CONFIG REQUIRED COMPONENTS workers)
+find_package(capi 0.4 CONFIG REQUIRED COMPONENTS workers)
 target_link_libraries(app PRIVATE capi::workers)
 ```
 
@@ -123,7 +123,8 @@ registration data; `capi_state(ctx)` is preserved.
 
 Middleware's code after `capi_next` runs before completion. It can set common
 headers, but cannot inspect finished job results or log the eventual completion
-status there. Log async results in completion callbacks. Request cleanup
+status there. Use `capi_on_finish` for final request status, bytes, duration,
+and cancellation outcomes, or log business results in completion callbacks. Request cleanup
 registered with `capi_defer` runs after work/completion, on the event loop,
 including cancellation paths. The request arena is freed only after cleanup.
 If work allocates heap-owned results, register request cleanup before submitting
@@ -184,6 +185,8 @@ Lock contention returns 503 without automatic write retries.
 
 The dependency-free core also provides `capi_async_begin`,
 `capi_async_cancelled`, and `capi_async_complete` for adapters to other executors.
+Include `<capi_async.h>` explicitly to use that advanced interface; it is no
+longer exposed by the normal HTTP/worker headers.
 Begin on the event loop, arrange your own producer, and call complete exactly
 once from that producer, even if cancelled. Completion consumes the token;
 never access it, request-owned memory, or published results again. Begin can

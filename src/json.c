@@ -20,13 +20,13 @@ static size_t utf8(const unsigned char *s, size_t len) {
 
 int capi_json_string(capi_ctx *ctx, capi_str s) {
     static const char digits[] = "0123456789abcdef";
-    if (s.len && !s.data) { ctx->failed = true; return -1; }
+    if (s.len && !s.data) { cp_fail(ctx, CAPI_ERROR_ARGUMENT, "capi_json_string", 0); return -1; }
     if (capi_write(ctx, "\"", 1)) return -1;
     size_t start = 0, at = 0;
     while (at < s.len) {
         unsigned char c = (unsigned char)s.data[at];
         size_t n = utf8((const unsigned char *)s.data + at, s.len - at);
-        if (!n) { ctx->failed = true; return -1; }
+        if (!n) { cp_fail(ctx, CAPI_ERROR_UTF8, "capi_json_string", 0); return -1; }
         if (c < 32 || c == '"' || c == '\\') {
             if (capi_write(ctx, s.data + start, at - start)) return -1;
             char escaped[6] = {'\\', 'u', '0', '0', digits[c >> 4], digits[c & 15]};

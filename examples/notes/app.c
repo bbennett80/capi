@@ -100,14 +100,10 @@ static void create_note(capi_ctx *ctx) {
 
 static void delete_note(capi_ctx *ctx) {
     notes_app *notes = capi_data(ctx);
-    capi_str param = capi_param(ctx, "id");
-    int64_t id = 0;
-    for (size_t i = 0; i < param.len; ++i) {
-        unsigned char c = (unsigned char)param.data[i];
-        if (c < '0' || c > '9' || id > (INT64_MAX - (c - '0')) / 10) { capi_text(ctx, 400, "Invalid note ID.\n"); return; }
-        id = id * 10 + (c - '0');
+    int64_t id;
+    if (capi_param_i64(ctx, "id", 1, INT64_MAX, &id) != CAPI_INPUT_FOUND) {
+        capi_text(ctx, 400, "Invalid note ID.\n"); return;
     }
-    if (!id) { capi_text(ctx, 400, "Invalid note ID.\n"); return; }
     capi_sqlite_tx *tx;
     int rc = capi_sqlite_begin(ctx, notes->db, CAPI_SQLITE_IMMEDIATE, &tx);
     if (rc != SQLITE_OK) { database_error(ctx, notes, rc); return; }
@@ -158,7 +154,7 @@ notes_app *notes_open(const char *database, const char *view_directory, char *er
     notes->http = capi_app_new();
     if (!notes->http) { snprintf(error, capacity, "out of memory"); goto fail; }
     notes_origin(notes, "http://127.0.0.1:8080");
-    if (capi_app_limits(notes->http, (capi_limits){16384, 32768, 4 * 1024 * 1024}) ||
+    if (capi_app_limits(notes->http, (capi_limits){16384, 32768, 4 * 1024 * 1024, 0}) ||
         capi_use(notes->http, "/", request_policy, notes) ||
         capi_route(notes->http, CAPI_GET, "/", index_page, notes) ||
         capi_route(notes->http, CAPI_POST, "/notes", create_note, notes) ||

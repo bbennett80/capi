@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "capi_workers.h"
+#include "capi_async.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -126,7 +127,7 @@ capi_work_result capi_work_submit(capi_ctx *ctx, capi_workers *pool,
     if (pool->stopping) { pthread_mutex_unlock(&pool->mutex); return CAPI_WORK_UNAVAILABLE; }
     if (pool->outstanding == pool->options.capacity) { pthread_mutex_unlock(&pool->mutex); return CAPI_WORK_FULL; }
     capi_job *job = malloc(sizeof(*job));
-    if (!job) { pthread_mutex_unlock(&pool->mutex); capi_fail(ctx); return CAPI_WORK_ERROR; }
+    if (!job) { pthread_mutex_unlock(&pool->mutex); capi_fail_with(ctx, CAPI_ERROR_OUT_OF_MEMORY, "capi_work_submit"); return CAPI_WORK_ERROR; }
     capi_async *pending = capi_async_begin(ctx);
     if (!pending) { free(job); pthread_mutex_unlock(&pool->mutex); return errno == EAGAIN ? CAPI_WORK_UNAVAILABLE : CAPI_WORK_ERROR; }
     *job = (capi_job){pool, pending, work, done, data};
