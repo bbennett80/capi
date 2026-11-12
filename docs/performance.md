@@ -79,3 +79,19 @@ A template fuzz run completed 938,587 inputs in 31 seconds, and an HTTP fuzz run
 including form decoding completed 647,335 inputs in 21 seconds, without crashes.
 The notes form/redirect/escaping flow was also checked over a real loopback HTTP
 connection. These are local macOS checks; Linux is covered by the configured CI.
+
+For 0.3, the worker, async SQLite, core, network, template, and notes suites
+passed in native, poll, shared, ASan/UBSan, and separate ThreadSanitizer builds.
+Core-only builds still passed without optional libraries. Installed static and
+shared consumers ran with the worker component, and core consumers required no
+SQLite or thread package. The worker suite exercises four simultaneous producers,
+640 stress requests, queue saturation, cancellation with socket reuse, retained
+body views, per-thread resource disposal, and shutdown beyond the socket deadline.
+An additional HTTP fuzz run completed 525,038 inputs in 21 seconds without a crash.
+
+A short 0.3 Release/kqueue loopback check (64 connections, 100,000 requests)
+measured 145,155 requests/s, p50 0.362 ms, p95 0.538 ms, and p99 0.935 ms. This
+single run is a sanity check, not a statistically controlled comparison. In the
+background-work example, a health request completed in 0.652 ms while a concurrent
+artificially delayed echo took 268 ms, confirming that the delay stayed off the
+event loop. CPU/storage-heavy real workloads still need their own measurements.

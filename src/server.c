@@ -5,6 +5,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,6 @@
 #include <sys/event.h>
 #define CP_KQUEUE 1
 #else
-#include <poll.h>
 #define CP_POLL 1
 #endif
 
@@ -29,22 +29,39 @@
 #define CP_BATCH 128
 #define CP_BUDGET (64 * 1024)
 
-typedef struct {
+typedef struct cp_connection {
     int fd;
     uint32_t generation;
     bool writing, closing, peer_eof;
     cp_buf input, body, wire;
     size_t sent, consumed;
     uint64_t activity, started;
+    capi_ctx *ctx;
 } cp_connection;
 typedef struct { uint64_t key; bool read, write, error; } cp_event;
+
+struct capi_async {
+    capi_server *server;
+    cp_connection *connection;
+    capi_ctx *ctx;
+    capi_async *next;
+    capi_async_done_fn done;
+    void *data, *handler_data;
+    cp_buf input, body; /* owned only after cancellation detaches the connection */
+    uint64_t started;
+    atomic_bool cancelled;
+};
 
 struct capi_server {
     capi_app *app;
     capi_server_options options;
     int listener, wake[2], reactor;
     uint16_t port;
-    volatile sig_atomic_t stop;
+    atomic_bool stop;
+    _Atomic(capi_async *) completed;
+    atomic_uint posting;
+    capi_async *ready;
+    size_t in_flight;
     bool running;
     cp_connection *connections;
     size_t active, cursor;
@@ -53,6 +70,50 @@ struct capi_server {
     uint64_t *pollkeys;
 #endif
 };
+
+_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "capi requires signal-safe lock-free atomic bool");
+
+bool capi_async_available(const capi_ctx *ctx) {
+    return ctx && ctx->server && ctx->async_allowed && !ctx->async && !ctx->failed &&
+        !ctx->server->stop && ctx->server->in_flight < ctx->server->options.max_connections;
+}
+
+capi_async *capi_async_begin(capi_ctx *ctx) {
+    if (!capi_async_available(ctx)) { errno = EAGAIN; return NULL; }
+    capi_async *pending = calloc(1, sizeof(*pending));
+    if (!pending) { capi_fail(ctx); return NULL; }
+    atomic_init(&pending->cancelled, false);
+    pending->server = ctx->server;
+    pending->connection = ctx->connection;
+    pending->ctx = ctx;
+    pending->handler_data = ctx->data;
+    pending->started = cp_now_ms();
+    ++ctx->server->in_flight;
+    ctx->async = pending;
+    return pending;
+}
+
+bool capi_async_cancelled(const capi_async *pending) {
+    return !pending || atomic_load_explicit(&pending->cancelled, memory_order_acquire);
+}
+
+void capi_async_complete(capi_async *pending, capi_async_done_fn done, void *data) {
+    if (!pending) return;
+    capi_server *s = pending->server;
+    /* Keep the server/wake pipe alive even if the loop consumes and frees the
+     * token before this producer finishes its wakeup. No token access after CAS. */
+    atomic_fetch_add_explicit(&s->posting, 1, memory_order_relaxed);
+    pending->done = done;
+    pending->data = data;
+    capi_async *head = atomic_load_explicit(&s->completed, memory_order_relaxed);
+    do { pending->next = head; }
+    while (!atomic_compare_exchange_weak_explicit(&s->completed, &head, pending, memory_order_release, memory_order_relaxed));
+    int saved = errno;
+    char byte = 1;
+    (void)write(s->wake[1], &byte, 1);
+    errno = saved;
+    atomic_fetch_sub_explicit(&s->posting, 1, memory_order_release);
+}
 
 uint64_t cp_now_ms(void) {
     struct timespec now;
@@ -84,7 +145,7 @@ static uint64_t key_for(capi_server *s, cp_connection *c) {
 static int watch(capi_server *s, int fd, uint64_t key, bool writing, bool add) {
 #ifdef CP_EPOLL
     struct epoll_event event = {0};
-    event.events = writing ? EPOLLOUT : EPOLLIN;
+    event.events = (uint32_t)(writing ? EPOLLOUT : EPOLLIN);
     event.data.u64 = key;
     return epoll_ctl(s->reactor, add ? EPOLL_CTL_ADD : EPOLL_CTL_MOD, fd, &event);
 #elif defined(CP_KQUEUE)
@@ -102,8 +163,14 @@ static int watch(capi_server *s, int fd, uint64_t key, bool writing, bool add) {
 static void unwatch(capi_server *s, int fd) {
 #ifdef CP_EPOLL
     (void)epoll_ctl(s->reactor, EPOLL_CTL_DEL, fd, NULL);
+#elif defined(CP_KQUEUE)
+    struct kevent change;
+    EV_SET(&change, (uintptr_t)fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    (void)kevent(s->reactor, &change, 1, NULL, 0, NULL);
+    EV_SET(&change, (uintptr_t)fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    (void)kevent(s->reactor, &change, 1, NULL, 0, NULL);
 #else
-    (void)s; (void)fd; /* kqueue removes closed descriptors automatically. */
+    (void)s; (void)fd;
 #endif
 }
 
@@ -134,8 +201,8 @@ static int wait_events(capi_server *s, cp_event *events, int timeout) {
     s->pollfds[n] = (struct pollfd){s->wake[0], POLLIN, 0}; s->pollkeys[n++] = CP_WAKE;
     for (size_t i = 0; i < s->options.max_connections; ++i) {
         cp_connection *c = &s->connections[i];
-        if (c->fd < 0) continue;
-        s->pollfds[n] = (struct pollfd){c->fd, c->writing ? POLLOUT : POLLIN, 0};
+        if (c->fd < 0 || (c->ctx && c->ctx->async)) continue;
+        s->pollfds[n] = (struct pollfd){c->fd, (short)(c->writing ? POLLOUT : POLLIN), 0};
         s->pollkeys[n++] = key_for(s, c);
     }
     int result = poll(s->pollfds, (nfds_t)n, timeout);
@@ -156,6 +223,19 @@ static void connection_close(capi_server *s, cp_connection *c) {
     unwatch(s, c->fd);
     close(c->fd);
     c->fd = -1;
+    if (c->ctx && c->ctx->async) {
+        capi_async *pending = c->ctx->async;
+        atomic_store_explicit(&pending->cancelled, true, memory_order_release);
+        pending->connection = NULL;
+        pending->input = c->input;
+        pending->body = c->body;
+        pending->ctx->output = &pending->body;
+        c->input = (cp_buf){0}; c->body = (cp_buf){0};
+    } else if (c->ctx) {
+        cp_request_dispose(c->ctx);
+        free(c->ctx);
+    }
+    c->ctx = NULL;
     free(c->input.data); free(c->body.data); free(c->wire.data);
     c->input = (cp_buf){0}; c->body = (cp_buf){0}; c->wire = (cp_buf){0};
     --s->active;
@@ -172,12 +252,16 @@ capi_server *capi_server_listen(capi_app *app, capi_server_options options) {
     if (!options.idle_timeout_ms) options.idle_timeout_ms = 15000;
     if (!options.request_timeout_ms) options.request_timeout_ms = 30000;
     if (!options.shutdown_timeout_ms) options.shutdown_timeout_ms = 5000;
+    if (!options.async_timeout_ms) options.async_timeout_ms = 30000;
     if (options.max_connections > 65536) {
         snprintf(app->error, sizeof(app->error), "max_connections exceeds 65536"); errno = EINVAL; return NULL;
     }
     capi_server *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->app = app; s->options = options;
+    atomic_init(&s->stop, false);
+    atomic_init(&s->completed, NULL);
+    atomic_init(&s->posting, 0);
     s->listener = s->reactor = s->wake[0] = s->wake[1] = -1;
     s->connections = calloc(options.max_connections, sizeof(*s->connections));
     if (!s->connections) goto fail;
@@ -280,13 +364,50 @@ static void accept_connections(capi_server *s) {
  * Pipelined bytes already read are dispatched after the previous response drains. */
 static int process_input(capi_server *s, cp_connection *c) {
     if (!c->input.len) return 0;
-    int result = cp_process(s->app, c->input.data, c->input.len, &c->body, &c->wire, &c->consumed, &c->closing);
-    if (result < 0) return -1;
+    if (!c->ctx) { c->ctx = calloc(1, sizeof(*c->ctx)); if (!c->ctx) return -1; }
+    int result = cp_request_begin(c->ctx, s->app, c->input.data, c->input.len, &c->body, &c->consumed, s, c);
     if (result == 1) {
+        if (c->ctx->async) { unwatch(s, c->fd); return 1; }
+        if (cp_request_finish(c->ctx, &c->wire, &c->closing) < 0) return -1;
         c->writing = true; c->sent = 0;
         if (watch(s, c->fd, key_for(s, c), true, false)) return -1;
     }
     return result;
+}
+
+static void drain_completions(capi_server *s) {
+    if (!s->ready) {
+        capi_async *stack = atomic_exchange_explicit(&s->completed, NULL, memory_order_acquire);
+        while (stack) {
+            capi_async *next = stack->next;
+            stack->next = s->ready;
+            s->ready = stack;
+            stack = next;
+        }
+    }
+    for (size_t i = 0; i < CP_BATCH && s->ready; ++i) {
+        capi_async *pending = s->ready;
+        s->ready = pending->next;
+        cp_connection *c = pending->connection;
+        capi_ctx *ctx = pending->ctx;
+        if (!c) {
+            if (pending->done) pending->done(NULL, pending->data);
+            cp_request_dispose(ctx);
+            free(ctx); free(pending->input.data); free(pending->body.data);
+        } else {
+            ctx->data = pending->handler_data;
+            if (pending->done) pending->done(ctx, pending->data);
+            ctx->data = NULL;
+            ctx->async = NULL;
+            if (cp_request_finish(ctx, &c->wire, &c->closing) < 0) connection_close(s, c);
+            else {
+                c->writing = true; c->sent = 0; c->activity = cp_now_ms();
+                if (watch(s, c->fd, key_for(s, c), true, true)) connection_close(s, c);
+            }
+        }
+        --s->in_flight;
+        free(pending);
+    }
 }
 
 static int read_connection(capi_server *s, cp_connection *c) {
@@ -349,6 +470,7 @@ int capi_server_run(capi_server *s) {
     uint64_t stopping = 0;
     uint64_t next_sweep = cp_now_ms() + 50;
     int result = 0;
+    bool reactor_failed = false;
     for (;;) {
         uint64_t now = cp_now_ms();
         if (s->stop && !stopping) {
@@ -357,12 +479,23 @@ int capi_server_run(capi_server *s) {
             for (size_t i = 0; i < s->options.max_connections; ++i)
                 if (s->connections[i].fd >= 0 && !s->connections[i].writing) connection_close(s, &s->connections[i]);
         }
-        if (stopping && (!s->active || now - stopping >= s->options.shutdown_timeout_ms)) break;
+        if (stopping && now - stopping >= s->options.shutdown_timeout_ms)
+            for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i]);
+        drain_completions(s);
+        if (stopping && !s->active && !s->in_flight && !atomic_load_explicit(&s->posting, memory_order_acquire)) break;
         cp_event events[CP_BATCH];
-        int count = wait_events(s, events, 50);
+        int count;
+        if (reactor_failed) {
+            struct pollfd wake = {s->wake[0], POLLIN, 0};
+            (void)poll(&wake, 1, s->ready ? 0 : 50);
+            count = 1; events[0] = (cp_event){CP_WAKE, true, false, false};
+        } else count = wait_events(s, events, s->ready ? 0 : 50);
         if (count < 0) {
             if (errno == EINTR) continue;
-            result = server_error(s, "event wait"); break;
+            result = server_error(s, "event wait"); reactor_failed = true;
+            capi_server_stop(s);
+            for (size_t i = 0; i < s->options.max_connections; ++i) connection_close(s, &s->connections[i]);
+            continue;
         }
         for (int i = 0; i < count; ++i) {
             cp_event e = events[i];
@@ -372,6 +505,8 @@ int capi_server_run(capi_server *s) {
             if (slot >= s->options.max_connections) continue;
             cp_connection *c = &s->connections[slot];
             if (c->fd < 0 || c->generation != generation) continue;
+            if (c->ctx && c->ctx->async) continue;
+            if (s->stop && !c->writing) { connection_close(s, c); continue; }
             if (e.error || (e.read && !c->writing && read_connection(s, c) < 0) ||
                 (e.write && c->writing && write_connection(s, c) < 0)) connection_close(s, c);
         }
@@ -381,6 +516,10 @@ int capi_server_run(capi_server *s) {
         for (size_t i = 0; i < s->options.max_connections; ++i) {
             cp_connection *c = &s->connections[i];
             if (c->fd < 0) continue;
+            if (c->ctx && c->ctx->async) {
+                if (now - c->ctx->async->started >= s->options.async_timeout_ms) connection_close(s, c);
+                continue;
+            }
             if (now - c->activity >= s->options.idle_timeout_ms ||
                 (!c->writing && c->started && now - c->started >= s->options.request_timeout_ms)) connection_close(s, c);
         }

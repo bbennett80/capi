@@ -38,7 +38,7 @@ storage interface. capi does not interpret `Forwarded` or `X-Forwarded-*`.
 ## Concurrency and memory
 
 The reactor uses level-triggered readiness and nonblocking sockets. A single
-thread accepts connections and runs handlers. Requests on each connection run
+thread accepts connections and runs handlers/completions. Requests on each connection run
 sequentially, and pipelined responses preserve order. Each event has a bounded
 read/write budget to prevent one busy connection monopolizing the loop.
 
@@ -49,7 +49,9 @@ response body plus response headers of output. Temporary handler output is
 also buffered separately; plan for roughly input + twice the response size,
 plus request arena allocations, at a connection's peak. Buffers grow lazily
 and are retained for keep-alive reuse, then freed when the connection closes.
-There is no automatic shrink policy.
+There is no automatic shrink policy. A request context is allocated lazily per
+connection and reused across requests. Its arena and input views are retained
+through asynchronous work, including after cancellation closes the socket.
 
 `max_connections` bounds accepted sockets (maximum 65536); it does not preallocate
 body buffers. At capacity, newly accepted sockets close immediately. OS file
@@ -72,11 +74,16 @@ compression, and configure appropriate upstream deadlines.
 
 For CPU parallelism, run independent processes on separate upstream ports.
 For shared immutable routes on separate server threads, synchronize any shared
-application state yourself. The framework does not spawn worker threads.
-Blocking database calls or filesystem I/O block all connections on that loop;
-this release does not expose an asynchronous handler completion API.
+application state yourself. The core does not spawn worker threads. Enable the
+optional [worker pool](workers.md) explicitly for blocking database/filesystem
+work. Its completions resume on the event loop; context APIs must not be used
+on workers. Direct blocking calls in a handler still stall its loop.
 
 Stop through `capi_server_stop` on SIGINT/SIGTERM, then let `capi_server_run`
 return before freeing resources. Queued responses drain; incomplete requests
 are discarded. Long-running synchronous handlers cannot be preempted by a
 shutdown or timeout and must return before the loop can act.
+Pending asynchronous requests are cancelled on stop. The socket drain deadline
+does not forcibly interrupt background C work: run waits for all producers and
+request cleanup before returning. Async requests have their own total deadline
+(`async_timeout_ms`); ordinary idle deadlines resume when their responses begin.

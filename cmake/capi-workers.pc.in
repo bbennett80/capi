@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: capi-workers
+Description: Bounded background work and event-loop completion for capi
+Version: @PROJECT_VERSION@
+Requires: capi
+Libs: -L${libdir} -lcapi_workers -pthread
+Cflags: -I${includedir} -pthread

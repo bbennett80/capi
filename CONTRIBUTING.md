@@ -12,11 +12,20 @@ make sanitize
 make poll
 make extras         # requires SQLite development headers/libraries
 make sanitize CMAKE_ARGS=-DCAPI_WITH_SQLITE=ON
+make workers
+make sanitize CMAKE_ARGS='-DCAPI_WITH_SQLITE=ON -DCAPI_WITH_WORKERS=ON'
+make thread-sanitize
 ```
 
 Add behavioral tests for routing, HTTP framing, lifecycle, and memory-safety
 changes. Socket tests use only ephemeral loopback ports. Treat malformed traffic
 as expected input and preserve strict, unambiguous framing.
+
+Worker changes require both ASan/UBSan and a separate ThreadSanitizer build.
+The worker suite covers queue saturation, responsive endpoints during blocked
+work, completion ordering, cancellation with socket reuse, retained input,
+queued-job skipping, initialization failures, concurrent producers, and shutdown.
+ASan and ThreadSanitizer cannot be combined in one build.
 
 For fuzzing, use a Clang distribution that includes libFuzzer (Apple's Command
 Line Tools compiler may not). LLVM Clang works on macOS; Linux Clang works in CI.

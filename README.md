@@ -3,7 +3,7 @@
 **Small surface. Fast core. Just C.**
 
 capi is a C11 web framework for HTTP APIs and small services, with a
-dependency-free core and optional SQLite and HTML template libraries.
+dependency-free core and optional SQLite, HTML template, and worker libraries.
 Write a handler, register a route, start a server. No code generation, runtime,
 package manager, or global application singleton.
 
@@ -67,7 +67,9 @@ cc -std=c11 -O2 -Iinclude src/*.c examples/hello.c -o hello
   output, copied headers, and an escaping helper that validates UTF-8.
 - **Optional application libraries.** Native SQLite integration with request
   cleanup and explicit transactions, plus compiled HTML templates with escaping,
-  sections, loops, and partials. Core-only applications link neither library.
+  sections, loops, and partials. A bounded worker pool keeps blocking work off
+  the event loop and resumes responses there. Core-only applications link none
+  of these libraries.
 - **Tests without sockets.** `capi_dispatch` runs the real parser, router,
   middleware, and serializer against an in-memory HTTP request.
 - **A complete development path.** CMake and pkg-config installation,
@@ -133,7 +135,7 @@ cmake --build my-service/build
 ./my-service/build/app
 ```
 
-Installed projects use `find_package(capi 0.2 CONFIG REQUIRED)` and
+Installed projects use `find_package(capi 0.3 CONFIG REQUIRED)` and
 `target_link_libraries(app PRIVATE capi::capi)`. Plain compiler builds can use
 `pkg-config --cflags --libs capi` with the install prefix's `lib/pkgconfig`
 directory on `PKG_CONFIG_PATH`.
@@ -158,7 +160,7 @@ and can be disabled with `-DCAPI_WITH_TEMPLATES=OFF`. Installed apps request the
 components they use:
 
 ```cmake
-find_package(capi 0.2 CONFIG REQUIRED COMPONENTS sqlite templates)
+find_package(capi 0.3 CONFIG REQUIRED COMPONENTS sqlite templates)
 target_link_libraries(app PRIVATE capi::sqlite capi::templates)
 ```
 
@@ -172,6 +174,28 @@ dotted lookup, comments, and registered partials support ordinary pages without
 an expression language. `{{{trusted_html}}}` explicitly opts out of escaping.
 See the [template guide](docs/templates.md).
 
+## Background work
+
+Use the optional worker pool for blocking database/filesystem work and substantial
+computations. Workers receive job data; completions run on the event loop to write
+the response. Request memory stays alive until work finishes, including on timeout.
+Queue capacity is bounded, overload is explicit, and cancellation is cooperative.
+
+```sh
+make workers
+./build-workers/capi_background
+# In another terminal:
+curl --data-binary 'hello' http://127.0.0.1:8080/slow &
+curl http://127.0.0.1:8080/health
+wait
+```
+
+Enable `-DCAPI_WITH_WORKERS=ON` and link `capi::workers`. Installed consumers
+request the `workers` component. The [worker guide](docs/workers.md) explains
+ownership, deadlines, shutdown, and per-worker resources. The
+[SQLite worker example](examples/async_sqlite.c) opens a separate connection per
+worker and returns copied results through event-loop completions.
+
 ## Verify and measure
 
 ```sh
@@ -179,6 +203,8 @@ make test          # parser, API, routing, middleware, real sockets
 make sanitize      # AddressSanitizer + UndefinedBehaviorSanitizer
 make poll          # run the same suite against the fallback backend
 make extras        # also test SQLite, templates, and the notes app
+make workers       # add worker/lifetime/overload tests and async examples
+make thread-sanitize # ThreadSanitizer, separate from ASan
 
 # With capi_hello running:
 ./build/capi_bench 127.0.0.1 8080 64 100000
@@ -190,12 +216,14 @@ not an independent performance comparison. See [benchmark methodology](docs/perf
 
 ## Scope
 
-capi 0.2 is a compact foundation, with an intentionally small API. Handlers run
-synchronously on one event-loop thread: keep them short and avoid blocking I/O.
+capi 0.3 is a compact foundation, with an intentionally small API. Handlers and
+completions run on one event-loop thread: keep them short and move blocking work
+to an explicitly configured worker pool.
 Scale independent instances behind a proxy. There is no built-in TLS, HTTP/2,
-WebSocket, streaming, compression, multipart parser, JSON parser,
-or background task system. The optional SQLite library is a synchronous adapter,
-not an asynchronous database layer. Use a TLS reverse proxy for HTTPS.
+WebSocket, streaming, compression, multipart parser, JSON parser, or durable job
+system. The optional worker pool runs in-process; jobs do not survive a process
+exit. The SQLite adapter is synchronous, with per-worker connections available
+through the pool's lifecycle hooks. Use a TLS reverse proxy for HTTPS.
 
 Request bodies require `Content-Length`; chunked transfer coding is rejected
 with 501, `Expect` with 417, and ambiguous framing with 400. Bodies and responses

@@ -3,6 +3,7 @@
 #include "capi.h"
 #include <stdalign.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 
 typedef struct { char *data; size_t len, cap; } cp_buf;
 typedef struct { capi_str name, value; } cp_header;
@@ -62,6 +63,10 @@ struct capi_ctx {
     int status;
     bool failed, close, http10, terminal_called;
     bool *next_used;
+    capi_server *server;
+    void *connection;
+    capi_async *async;
+    bool async_allowed;
 };
 
 int cp_buf_append(cp_buf *buf, const void *data, size_t len, size_t limit);
@@ -72,5 +77,9 @@ int cp_token(unsigned char c);
 int cp_parse(capi_ctx *ctx, const char *data, size_t len, size_t *consumed);
 int cp_process(capi_app *app, const char *data, size_t len, cp_buf *body,
                cp_buf *wire, size_t *consumed, bool *close);
+int cp_request_begin(capi_ctx *ctx, capi_app *app, const char *data, size_t len,
+                     cp_buf *body, size_t *consumed, capi_server *server, void *connection);
+int cp_request_finish(capi_ctx *ctx, cp_buf *wire, bool *close);
+void cp_request_dispose(capi_ctx *ctx);
 uint64_t cp_now_ms(void);
 #endif

@@ -1,4 +1,4 @@
-.PHONY: all test sanitize poll extras bench clean
+.PHONY: all test sanitize poll extras workers thread-sanitize bench clean
 BUILD ?= build
 CMAKE_ARGS ?=
 
@@ -24,8 +24,18 @@ extras:
 	cmake --build build-extras -j
 	ctest --test-dir build-extras --output-on-failure
 
+workers:
+	cmake -S . -B build-workers -DCMAKE_BUILD_TYPE=Release -DCAPI_WITH_WORKERS=ON $(CMAKE_ARGS)
+	cmake --build build-workers -j
+	ctest --test-dir build-workers --output-on-failure
+
+thread-sanitize:
+	cmake -S . -B build-workers-tsan -DCMAKE_BUILD_TYPE=Debug -DCAPI_WITH_WORKERS=ON -DCAPI_THREAD_SANITIZE=ON $(CMAKE_ARGS)
+	cmake --build build-workers-tsan -j
+	ctest --test-dir build-workers-tsan --output-on-failure
+
 bench: all
 	@echo "Start build/capi_hello in another terminal, then run build/capi_bench 127.0.0.1 8080 64 100000"
 
 clean:
-	cmake -E rm -rf build build-sanitize build-poll build-extras
+	cmake -E rm -rf build build-sanitize build-poll build-extras build-workers build-workers-tsan

@@ -2,7 +2,7 @@
 
 The core public API lives in [`include/capi.h`](../include/capi.h).
 Include this header and link `capi::capi` or `-lcapi`.
-Optional [SQLite](sqlite.md) and [template](templates.md) libraries have separate
+Optional [SQLite](sqlite.md), [template](templates.md), and [worker](workers.md) libraries have separate
 headers and link targets.
 
 ## Lifetime and ownership
@@ -19,6 +19,11 @@ headers and link targets.
 | Bytes passed to `capi_write` | Copied into response | Original argument may immediately change |
 | `capi_result.data` | Caller | `capi_result_free` |
 
+For asynchronous requests, views and arena allocations remain valid through
+work completion and deferred cleanup, even after their socket closes. Submitted
+job data is owned by the worker until its completion returns to the event loop;
+see the [worker ownership rules](workers.md#ownership-and-execution-order).
+
 `capi_str` is `{ const char *data; size_t len; }`. Views need not be NUL-terminated
 and may contain NUL bytes. Do not pass a view to `strlen` or `%s`. Use
 `capi_str_eq(view, "literal")` for comparisons. For textual output use
@@ -26,8 +31,8 @@ and may contain NUL bytes. Do not pass a view to `strlen` or `%s`. Use
 
 Freeze app configuration while it is in use. Separate servers may share an
 immutable app on separate threads, provided handlers and registration data are
-thread-safe. Each server is operated by one thread; never run or free a server
-concurrently with its event loop. `capi_server_stop` is the exception: it can
+thread-safe. Each server is operated by one thread; never free a server
+concurrently with its event loop. `capi_server_stop` is thread-safe and can
 wake the loop from a signal handler. Signal installation and the lifetime of
 the server pointer remain the application's responsibility.
 
@@ -209,7 +214,8 @@ capi_server *server = capi_server_listen(app, (capi_server_options){
     .max_connections = 4096,
     .idle_timeout_ms = 15000,
     .request_timeout_ms = 30000,
-    .shutdown_timeout_ms = 5000
+    .shutdown_timeout_ms = 5000,
+    .async_timeout_ms = 30000
 });
 ```
 
@@ -225,5 +231,7 @@ response limits must be nonzero. Overflowing limit combinations are rejected.
 or an event-loop error occurs. `capi_server_stop` wakes the reactor. Stop closes
 the listener and idle/incomplete connections, lets queued responses drain, then
 closes remaining connections at the shutdown deadline. A stopped server cannot
-be restarted. Free the server before freeing its app. See the examples for
+be restarted. Pending async requests are cancelled; run additionally waits for
+their producers and cleanup even beyond the socket drain deadline. Free the
+server before freeing its app. See the examples for
 SIGINT/SIGTERM handling.

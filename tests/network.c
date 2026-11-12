@@ -19,6 +19,20 @@ static char large_body[256 * 1024];
 #define CHECK(expr) do { ++checks; if (!(expr)) { fprintf(stderr, "%s:%d: %s (errno %d)\n", __FILE__, __LINE__, #expr, errno); if (child > 0) { kill(child, SIGKILL); waitpid(child, NULL, 0); } exit(1); } } while (0)
 static void stop(int n) { (void)n; capi_server_stop(server); }
 static void hello(capi_ctx *ctx) { capi_text(ctx, 200, "hello"); }
+static void deferred_done(capi_ctx *ctx, void *data) {
+    CHECK(ctx && data == (void *)server);
+    CHECK(capi_str_eq(capi_path(ctx), "/deferred"));
+    CHECK(!strcmp(capi_data(ctx), "registration"));
+    CHECK(!capi_async_available(ctx));
+    capi_text(ctx, 200, "deferred");
+}
+static void deferred(capi_ctx *ctx) {
+    CHECK(capi_async_available(ctx));
+    capi_async *pending = capi_async_begin(ctx); CHECK(pending);
+    CHECK(capi_async_begin(ctx) == NULL);
+    CHECK(!capi_async_cancelled(pending));
+    capi_async_complete(pending, deferred_done, server);
+}
 static void echo(capi_ctx *ctx) { capi_str body = capi_body(ctx); capi_write(ctx, body.data, body.len); }
 static void large(capi_ctx *ctx) { capi_write(ctx, large_body, sizeof(large_body)); }
 static void shutdown_handler(capi_ctx *ctx) { large(ctx); capi_server_stop(server); }
@@ -81,6 +95,7 @@ int main(void) {
     CHECK(capi_route(app, CAPI_POST, "/echo", echo, NULL) == 0);
     CHECK(capi_route(app, CAPI_GET, "/large", large, NULL) == 0);
     CHECK(capi_route(app, CAPI_GET, "/stop", shutdown_handler, NULL) == 0);
+    CHECK(capi_route(app, CAPI_GET, "/deferred", deferred, "registration") == 0);
     int startup[2]; CHECK(pipe(startup) == 0);
     child = fork(); CHECK(child >= 0);
     if (!child) {
@@ -108,6 +123,10 @@ int main(void) {
     /* Repeated keep-alive requests reuse a connection and its buffers. */
     for (int i = 0; i < 100; ++i) { send_bytes(fd, request, strlen(request)); receive_response(fd, "hello", 5); }
     close(fd);
+
+    fd = connect_to(port);
+    const char *deferred_request = "GET /deferred HTTP/1.1\r\nHost: x\r\n\r\n";
+    send_bytes(fd, deferred_request, strlen(deferred_request)); receive_response(fd, "deferred", 8); close(fd);
 
     fd = connect_to(port);
     char pipeline[4096] = "";

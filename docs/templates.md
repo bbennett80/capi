@@ -10,7 +10,7 @@ It is enabled by default as a separate library, and never linked into the core
 implicitly. Disable it with `-DCAPI_WITH_TEMPLATES=OFF`. Installed consumers use:
 
 ```cmake
-find_package(capi 0.2 CONFIG REQUIRED COMPONENTS templates)
+find_package(capi 0.3 CONFIG REQUIRED COMPONENTS templates)
 target_link_libraries(app PRIVATE capi::templates)
 ```
 

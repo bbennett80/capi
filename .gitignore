@@ -11,3 +11,6 @@
 /notes.db
 /notes.db-wal
 /notes.db-shm
+/messages.db
+/messages.db-wal
+/messages.db-shm

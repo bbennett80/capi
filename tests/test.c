@@ -262,6 +262,8 @@ static void defer_halt(capi_ctx *ctx) {
     capi_text(ctx, 403, "halted");
 }
 static void form_value(capi_ctx *ctx) {
+    CHECK(!capi_async_available(ctx));
+    CHECK(capi_async_begin(ctx) == NULL);
     capi_str value;
     int result = capi_form(ctx, "name", &value);
     if (result < 0) { capi_text(ctx, 400, "bad form"); return; }

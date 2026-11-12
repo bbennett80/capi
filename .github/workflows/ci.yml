@@ -16,7 +16,7 @@ jobs:
       - name: Configure
         shell: bash
         run: |
-          args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_SQLITE=ON)
+          args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_SQLITE=ON -DCAPI_WITH_WORKERS=ON)
           if [[ '${{ matrix.mode }}' == sanitize ]]; then args+=(-DCAPI_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug); fi
           if [[ '${{ matrix.mode }}' == poll ]]; then args+=(-DCAPI_FORCE_POLL=ON); fi
           cmake -S . -B build "${args[@]}"
@@ -28,19 +28,26 @@ jobs:
           build/capi new "$RUNNER_TEMP/starter"
           cmake -S "$RUNNER_TEMP/starter" -B "$RUNNER_TEMP/starter/build" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
           cmake --build "$RUNNER_TEMP/starter/build"
-          cmake -S tests/consumer -B build-consumer-core -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" -DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=ON ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
+          cmake -S tests/consumer -B build-consumer-core -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" -DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=ON -DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
           cmake --build build-consumer-core
           build-consumer-core/consumer
-          cmake -S tests/consumer -B build-consumer-extras -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" -DCAPI_CONSUME_EXTRAS=ON ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
+          cmake -S tests/consumer -B build-consumer-extras -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/capi" -DCAPI_CONSUME_EXTRAS=ON -DCAPI_CONSUME_WORKERS=ON ${{ matrix.mode == 'sanitize' && '-DCMAKE_C_FLAGS=-fsanitize=address,undefined' || '' }}
           cmake --build build-consumer-extras
           build-consumer-extras/consumer
   core-only:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_SQLITE=OFF -DCAPI_WITH_TEMPLATES=OFF -DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=ON
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_SQLITE=OFF -DCAPI_WITH_TEMPLATES=OFF -DCAPI_WITH_WORKERS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_SQLite3=ON -DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON
       - run: cmake --build build --parallel
       - run: ctest --test-dir build --output-on-failure
+  thread-sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: CC=clang cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-Werror -DCAPI_WITH_WORKERS=ON -DCAPI_THREAD_SANITIZE=ON
+      - run: cmake --build build-tsan --parallel
+      - run: ctest --test-dir build-tsan --output-on-failure
   fuzz:
     runs-on: ubuntu-latest
     steps:

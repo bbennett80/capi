@@ -1,7 +1,7 @@
 #ifndef CAPI_H
 #define CAPI_H
 
-/* capi 0.2.0 — C11, no dependencies in the core. All lengths are bytes. */
+/* capi 0.3.0 — C11, no dependencies in the core. All lengths are bytes. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define CAPI_VERSION "0.2.0"
+#define CAPI_VERSION "0.3.0"
 #define CAPI_MAX_HEADERS 64
 #define CAPI_MAX_PARAMS 16
 
@@ -48,7 +48,8 @@ void capi_set_state(capi_ctx *ctx, void *state);
 void *capi_state(const capi_ctx *ctx); /* application-owned request state */
 void *capi_alloc(capi_ctx *ctx, size_t bytes); /* max_align_t aligned, zeroed */
 typedef void (*capi_cleanup_fn)(void *data);
-/* LIFO cleanup after the pipeline, before response finalization and arena free.
+/* LIFO cleanup after the pipeline and any async completion, before response
+ * finalization and arena free.
  * Runs on short-circuits and failed responses too. Returns 0 or -1. */
 int capi_defer(capi_ctx *ctx, capi_cleanup_fn cleanup, void *data);
 void capi_fail(capi_ctx *ctx); /* substitute a clean 500 at finalization */
@@ -80,6 +81,22 @@ int capi_json(capi_ctx *ctx, int status, const char *json);
 int capi_json_string(capi_ctx *ctx, capi_str string);
 int capi_redirect(capi_ctx *ctx, int status, const char *location);
 
+typedef struct capi_async capi_async;
+typedef void (*capi_async_done_fn)(capi_ctx *ctx, void *data);
+/* Low-level asynchronous handoff. Begin only during a live server pipeline,
+ * once per request. Not available in capi_dispatch or a completion callback.
+ * Request views/arena/cleanup remain alive until complete is called.
+ * Middleware unwinds before completion; cleanup runs after completion. */
+bool capi_async_available(const capi_ctx *ctx);
+capi_async *capi_async_begin(capi_ctx *ctx);
+/* These two functions may be called by a producer thread. Complete exactly
+ * once, even after cancellation. Complete consumes the token: never access it
+ * afterward. done runs on the event loop, with ctx == NULL if cancelled.
+ * Completing also relinquishes access to request-owned memory and job results.
+ * The producer must not use any capi_ctx API or mutate submitted request data. */
+bool capi_async_cancelled(const capi_async *pending);
+void capi_async_complete(capi_async *pending, capi_async_done_fn done, void *data);
+
 /* Socket-free integration testing. Parses one complete HTTP request, invokes
  * the same pipeline as the server, and returns an owned wire response.
  * Returns 1 complete, 0 incomplete, -1 API/allocation failure.
@@ -100,14 +117,17 @@ typedef struct {
     uint32_t idle_timeout_ms;  /* 0: 15000 */
     uint32_t request_timeout_ms; /* 0: 30000, total receive deadline */
     uint32_t shutdown_timeout_ms; /* 0: 5000, drain pending responses */
+    uint32_t async_timeout_ms; /* 0: 30000, total asynchronous request deadline */
 } capi_server_options;
 
-/* One event loop per server; handlers run synchronously on its thread.
+/* One event loop per server; handlers and async completions run on its thread.
  * Freeze app registration/configuration while a server uses it. */
 capi_server *capi_server_listen(capi_app *app, capi_server_options options);
 uint16_t capi_server_port(const capi_server *server);
 int capi_server_run(capi_server *server);
-/* Async-signal-safe; may also be called from a handler. */
+/* Async-signal-safe and thread-safe while server is alive. May be called from
+ * a handler. Stop cancels async requests; run still waits for their producers
+ * to complete before returning. C work cannot be forcibly interrupted. */
 void capi_server_stop(capi_server *server);
 void capi_server_free(capi_server *server);
 const char *capi_server_backend(void);

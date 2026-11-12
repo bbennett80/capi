@@ -1,5 +1,8 @@
 #include <capi.h>
 #include <string.h>
+#ifdef CONSUME_WORKERS
+#include <capi_workers.h>
+#endif
 #ifdef CONSUME_EXTRAS
 #include <capi_sqlite.h>
 #include <capi_template.h>
@@ -15,6 +18,15 @@ static void hello(capi_ctx *ctx) {
 }
 int main(void) {
     void *data = NULL;
+#ifdef CONSUME_WORKERS
+    capi_workers *pool = capi_workers_new((capi_workers_options){.threads = 1, .capacity = 2});
+    if (!pool) return 1;
+    capi_workers_stats stats;
+    capi_workers_get_stats(pool, &stats);
+    int pool_failed = stats.threads != 1 || stats.capacity != 2 || stats.outstanding != 0;
+    capi_workers_free(pool);
+    if (pool_failed) return 1;
+#endif
 #ifdef CONSUME_EXTRAS
     sqlite3 *db = NULL;
     if (capi_sqlite_open(":memory:", &db) != SQLITE_OK) { sqlite3_close(db); return 1; }

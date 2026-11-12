@@ -530,44 +530,72 @@ static int serialize(capi_ctx *ctx, cp_buf *wire) {
     return 0;
 }
 
-int cp_process(capi_app *app, const char *data, size_t len, cp_buf *body, cp_buf *wire, size_t *consumed, bool *close) {
-    capi_ctx ctx = {0};
-    ctx.app = app; ctx.output = body; ctx.status = 200;
-    body->len = 0; wire->len = 0;
-    int parsed = cp_parse(&ctx, data, len, consumed);
+int cp_request_begin(capi_ctx *request, capi_app *app, const char *data, size_t len,
+                     cp_buf *body, size_t *consumed, capi_server *server, void *connection) {
+    *request = (capi_ctx){0};
+    capi_ctx *ctx = request;
+    ctx->app = app; ctx->output = body; ctx->status = 200;
+    ctx->server = server; ctx->connection = connection;
+    body->len = 0;
+    int parsed = cp_parse(ctx, data, len, consumed);
     if (!parsed) return 0;
     if (parsed != 1) {
-        ctx.close = true;
+        ctx->close = true;
         *consumed = len;
-        capi_status(&ctx, parsed);
-        capi_printf(&ctx, "%s\n", reason(parsed));
+        capi_status(ctx, parsed);
+        capi_printf(ctx, "%s\n", reason(parsed));
     } else {
-        ctx.matched = match(&app->root, ctx.path.data + 1, ctx.path.len - 1, ctx.path.len > 1, ctx.captures, 0);
-        if (!ctx.matched && ctx.path.len == 1 && app->root.wildcard && terminal(app->root.wildcard)) {
-            ctx.matched = app->root.wildcard;
-            ctx.captures[0] = (capi_str){ctx.path.data + 1, 0};
+        ctx->matched = match(&app->root, ctx->path.data + 1, ctx->path.len - 1, ctx->path.len > 1, ctx->captures, 0);
+        if (!ctx->matched && ctx->path.len == 1 && app->root.wildcard && terminal(app->root.wildcard)) {
+            ctx->matched = app->root.wildcard;
+            ctx->captures[0] = (capi_str){ctx->path.data + 1, 0};
         }
-        if (ctx.matched) {
-            int method = method_index(ctx.method);
-            ctx.route = method < CAPI_ANY ? ctx.matched->routes[method] : NULL;
-            if (!ctx.route && method == CAPI_HEAD) ctx.route = ctx.matched->routes[CAPI_GET];
-            if (!ctx.route) ctx.route = ctx.matched->routes[CAPI_ANY];
+        if (ctx->matched) {
+            int method = method_index(ctx->method);
+            ctx->route = method < CAPI_ANY ? ctx->matched->routes[method] : NULL;
+            if (!ctx->route && method == CAPI_HEAD) ctx->route = ctx->matched->routes[CAPI_GET];
+            if (!ctx->route) ctx->route = ctx->matched->routes[CAPI_ANY];
         }
-        advance(&ctx);
+        ctx->async_allowed = true;
+        advance(ctx);
+        ctx->async_allowed = false;
     }
-    while (ctx.cleanup) {
-        cp_cleanup *entry = ctx.cleanup;
-        ctx.cleanup = entry->next;
+    return 1;
+}
+
+static void run_cleanup(capi_ctx *ctx) {
+    while (ctx->cleanup) {
+        cp_cleanup *entry = ctx->cleanup;
+        ctx->cleanup = entry->next;
         entry->fn(entry->data);
     }
-    if (ctx.failed) {
-        body->len = 0; ctx.nresponse_headers = 0; ctx.status = 500; ctx.close = true;
-        if (cp_buf_append(body, "Internal Server Error\n", 22, SIZE_MAX)) { cp_arena_free(ctx.arena); return -1; }
+}
+
+void cp_request_dispose(capi_ctx *ctx) {
+    if (!ctx) return;
+    run_cleanup(ctx);
+    cp_arena_free(ctx->arena);
+    ctx->arena = NULL;
+}
+
+int cp_request_finish(capi_ctx *ctx, cp_buf *wire, bool *close) {
+    wire->len = 0;
+    run_cleanup(ctx);
+    if (ctx->failed) {
+        ctx->output->len = 0; ctx->nresponse_headers = 0; ctx->status = 500; ctx->close = true;
+        if (cp_buf_append(ctx->output, "Internal Server Error\n", 22, SIZE_MAX)) { cp_request_dispose(ctx); return -1; }
     }
-    *close = ctx.close;
-    int result = serialize(&ctx, wire);
-    cp_arena_free(ctx.arena);
+    *close = ctx->close;
+    int result = serialize(ctx, wire);
+    cp_request_dispose(ctx);
     return result ? -1 : 1;
+}
+
+int cp_process(capi_app *app, const char *data, size_t len, cp_buf *body, cp_buf *wire, size_t *consumed, bool *close) {
+    capi_ctx ctx;
+    int parsed = cp_request_begin(&ctx, app, data, len, body, consumed, NULL, NULL);
+    if (!parsed) return 0;
+    return cp_request_finish(&ctx, wire, close);
 }
 
 int capi_dispatch(capi_app *app, const void *request, size_t len, capi_result *result) {

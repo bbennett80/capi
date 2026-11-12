@@ -22,7 +22,7 @@ Default builds do not search for or link SQLite. Vendored applications link
 `capi::sqlite`; installed applications request the component:
 
 ```cmake
-find_package(capi 0.2 CONFIG REQUIRED COMPONENTS sqlite)
+find_package(capi 0.3 CONFIG REQUIRED COMPONENTS sqlite)
 target_link_libraries(app PRIVATE capi::sqlite)
 ```
 
@@ -118,7 +118,7 @@ follow explicit application decisions, not inferred HTTP status codes.
 
 ## Latency and contention
 
-SQLite executes synchronously on the handler's event-loop thread. A query,
+SQLite executes synchronously on the thread that calls it. In a handler, a query,
 disk operation, checkpoint, or commit can stall other connections on that loop.
 A zero busy timeout prevents intentional lock-wait sleeping, but does not make
 SQLite or disk I/O nonblocking. Keep statements short, bound result sets, and
@@ -126,9 +126,11 @@ measure storage latency. The adapter never retries a write automatically.
 
 Handle `(rc & 0xff) == SQLITE_BUSY` or `SQLITE_LOCKED` explicitly; the notes
 example returns 503 with `Retry-After: 1`. Do not set a long busy timeout in a
-latency-sensitive event loop. For expensive storage work, use a separate service
-or a future explicit asynchronous execution facility; this release does not
-provide asynchronous handler completion. Multiple independent server processes
+latency-sensitive event loop. For blocking storage work, use the optional
+[worker pool](workers.md) with an independent connection per worker. Native
+statement lifetimes stay on the worker; copy results before returning to the
+event-loop completion. The [SQLite worker example](../examples/async_sqlite.c)
+shows this pattern. Multiple independent server processes
 may open the same database, subject to SQLite's concurrency rules.
 
 SQLite references: [preparing statements](https://www.sqlite.org/c3ref/prepare.html),
