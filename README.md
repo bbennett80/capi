@@ -148,6 +148,10 @@ directory on `PKG_CONFIG_PATH`.
 
 ## Generate a CRUD API
 
+New to capi? Follow [Build a todo app](examples/todo/README.md) from installation
+through CLI route generation, HTTP requests, SQLite persistence, and a custom C
+route.
+
 With the SQLite component installed:
 
 ```sh

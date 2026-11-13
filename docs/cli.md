@@ -1,5 +1,8 @@
 # CLI and resource generators
 
+For a step-by-step first application, start with the
+[todo walkthrough](../examples/todo/README.md).
+
 The `capi` CLI creates projects and editable SQLite CRUD controllers. The CLI
 itself is C11 and has no SQLite dependency; generated SQLite applications link
 the optional `capi::sqlite` component. Templates are embedded in the executable,
