@@ -146,6 +146,28 @@ Installed projects use `find_package(capi 0.4 CONFIG REQUIRED)` and
 `pkg-config --cflags --libs capi` with the install prefix's `lib/pkgconfig`
 directory on `PKG_CONFIG_PATH`.
 
+## Generate a CRUD API
+
+With the SQLite component installed:
+
+```sh
+capi new my-api --sqlite
+cd my-api
+capi generate resource posts title:string body:text views:integer published:boolean
+capi routes
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/.local"
+cmake --build build
+./build/app
+```
+
+The generator creates editable C controllers for list, show, create, PUT, PATCH,
+and delete, using SQLite bound parameters, validated form input, JSON responses,
+pagination, and explicit transactions. New resources are wired into the build
+automatically. Existing controllers are never overwritten; add `--dry-run` to
+preview generation. The schema bootstraps missing tables; schema migrations
+remain explicit. See the [CLI quick start](docs/cli.md) for installation, curl
+examples, field types, and customization.
+
 ## SQLite and templates
 
 Build the optional SQLite adapter and the [Fieldnotes example](examples/notes/README.md):

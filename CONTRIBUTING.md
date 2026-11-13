@@ -1,5 +1,10 @@
 # Contributing
 
+CLI templates live in `tools/templates` and are embedded into the C executable
+at configure time. Edit those sources rather than generated headers. With tools
+and SQLite enabled, `ctest --test-dir build -R '^cli$' --output-on-failure` generates, installs,
+and compiles fresh applications, then exercises the emitted CRUD controllers.
+
 Keep capi small, understandable, and dependency-free. Runtime code and tools
 are C11. The public API is in `include/capi.h`; private interfaces stay in
 `src/internal.h`. Prefer explicit lengths and ownership over hidden allocation.

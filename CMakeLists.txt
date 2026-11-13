@@ -95,7 +95,24 @@ if(CAPI_BUILD_EXAMPLES)
 endif()
 
 if(CAPI_BUILD_TOOLS)
-  add_executable(capi_cli tools/capi.c)
+  # Embed line arrays so the installed C CLI needs no template directory.
+  set(scaffold_header "${CMAKE_CURRENT_BINARY_DIR}/generated/scaffold_templates.h")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  file(WRITE "${scaffold_header}" "/* Generated from tools/templates; edit the source templates. */\n")
+  function(capi_embed_template name path)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${path}")
+    file(READ "${path}" contents)
+    string(REPLACE "\\" "\\\\" contents "${contents}")
+    string(REPLACE "\"" "\\\"" contents "${contents}")
+    string(REPLACE "\n" "\\n\",\n\"" contents "${contents}")
+    file(APPEND "${scaffold_header}" "static const char *const ${name}[] = {\n\"${contents}\",\nNULL};\n")
+  endfunction()
+  capi_embed_template(sqlite_main tools/templates/sqlite_main.c)
+  capi_embed_template(sqlite_cmake tools/templates/sqlite_CMakeLists.txt)
+  capi_embed_template(sqlite_readme tools/templates/sqlite_README.md)
+  capi_embed_template(resource_template tools/templates/resource.c)
+  add_executable(capi_cli tools/capi.c tools/generate.c)
+  target_include_directories(capi_cli PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   set_target_properties(capi_cli PROPERTIES OUTPUT_NAME capi)
   add_executable(capi_bench tools/bench.c)
   add_executable(capi_perf_report tools/perf_report.c)
@@ -107,6 +124,15 @@ endif()
 
 if(CAPI_BUILD_TESTS)
   enable_testing()
+  if(CAPI_BUILD_TOOLS AND CAPI_WITH_SQLITE)
+    add_test(NAME cli COMMAND ${CMAKE_COMMAND}
+      "-DCLI=$<TARGET_FILE:capi_cli>" "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}" "-DCC=${CMAKE_C_COMPILER}"
+      "-DCONFIG=$<CONFIG>" "-DCOMPILE_FLAGS=${CMAKE_C_FLAGS}"
+      "-DSANITIZE=${CAPI_SANITIZE}" "-DTHREAD_SANITIZE=${CAPI_THREAD_SANITIZE}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake")
+    set_tests_properties(cli PROPERTIES TIMEOUT 120)
+  endif()
   add_executable(capi_tests tests/test.c)
   target_link_libraries(capi_tests PRIVATE capi)
   add_test(NAME core COMMAND capi_tests)

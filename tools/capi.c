@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "../include/capi.h"
+#include "generate.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +46,18 @@ static int write_file(const char *directory, const char *name, const char *conte
 }
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--version")) { puts("capi " CAPI_VERSION); return 0; }
+    if (argc >= 2 && (!strcmp(argv[1], "generate") || !strcmp(argv[1], "g"))) return cli_generate(argc - 2, argv + 2);
+    if (argc == 2 && !strcmp(argv[1], "routes")) return cli_routes();
+    if (argc == 4 && !strcmp(argv[1], "new") && !strcmp(argv[3], "--sqlite")) return cli_new_sqlite(argv[2]);
     if (argc != 3 || strcmp(argv[1], "new")) {
-        fputs("usage: capi new <directory>\n       capi --version\n", stderr); return 1;
+        FILE *output = argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "help")) ? stdout : stderr;
+        fputs("usage: capi new <directory> [--sqlite]\n"
+              "       capi generate resource <plural_name> <field[:type]>... [--dry-run]\n"
+              "       capi g resource <plural_name> <field[:type]>...\n"
+              "       capi routes\n       capi --version\n\n"
+              "Field types: string (default), text, integer, boolean.\n"
+              "Generators run inside a project created with --sqlite.\n", output);
+        return output == stdout ? 0 : 1;
     }
     if (mkdir(argv[2], 0755)) { fprintf(stderr, "capi: cannot create %s: %s\n", argv[2], strerror(errno)); return 1; }
     if (write_file(argv[2], "main.c", main_source) || write_file(argv[2], "CMakeLists.txt", cmake_source) ||
