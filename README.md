@@ -255,6 +255,9 @@ Run `./tools/measure.sh` to collect the matrix on your own machine; see
 [performance and methodology](docs/performance.md) for details.
 
 ```sh
+make check         # full local CI: builds, sanitizers, consumers, fuzzing
+make check-quick   # Release + core-only checks
+make hooks         # opt into staged-file pre-commit checks for this checkout
 make test          # parser, API, routing, middleware, real sockets
 make sanitize      # AddressSanitizer + UndefinedBehaviorSanitizer
 make poll          # run the same suite against the fallback backend
@@ -265,6 +268,11 @@ make thread-sanitize # ThreadSanitizer, separate from ASan
 # With capi_hello running:
 ./build/capi_bench 127.0.0.1 8080 64 100000
 ```
+
+The local hook defaults to full verification and uses the same check script as
+GitHub Actions. It runs without GitHub credits and checks a staged snapshot
+without changing your working files. See [local CI setup](CONTRIBUTING.md#local-ci-and-pre-commit-checks)
+for prerequisites, quick mode, logs, and disabling the hook.
 
 The load tool reports throughput and p50/p95/p99 end-to-end latency, using
 keep-alive with one in-flight request per connection. It is a development tool,

@@ -22,6 +22,74 @@ make sanitize CMAKE_ARGS='-DCAPI_WITH_SQLITE=ON -DCAPI_WITH_WORKERS=ON'
 make thread-sanitize
 ```
 
+## Local CI and pre-commit checks
+
+GitHub Actions can stay disabled: the same verification commands run locally,
+with no GitHub credits, downloads, or automatic package installation. Run:
+
+```sh
+make check        # full native-host CI checks
+make check-quick  # Release + core-only checks
+make hooks        # enable the tracked pre-commit hook for this checkout
+```
+
+`make hooks` configures this repository's local `core.hooksPath` as `.githooks`.
+It refuses to replace an existing hook configuration or executable pre-commit
+hook. Each clone opts in independently; Git does not activate hooks on clone.
+The hook defaults to **full** mode and blocks the commit on any failure.
+
+Full mode runs Release, ASan/UBSan, poll, core-only, separate ThreadSanitizer,
+and two 30-second libFuzzer smoke tests. Release/sanitizer/poll phases also test
+fresh installed packages, a generated starter, a core consumer with optional
+dependency lookup disabled, and an all-components consumer. Generated CRUD
+application tests are included. This takes a few minutes on a cold build.
+Quick mode runs Release (including installed consumers) and core-only; it
+explicitly omits sanitizers, poll, and fuzzing.
+
+```sh
+git config --local capi.preCommitMode quick  # optional, persist quicker checks
+git config --local capi.preCommitMode full   # restore the default coverage
+CAPI_CHECK_MODE=full git commit             # one-commit mode override
+git config --local --unset core.hooksPath   # disable this hook
+```
+
+The hook exports a frozen snapshot of the **staged index** into ignored
+`build-pre-commit/source`, runs that snapshot's check script, and keeps build
+products under `build-pre-commit/build`. It never stashes, stages, formats, or
+rewrites your source files. Partially staged files and untracked changes are
+handled naturally. A changed index during verification blocks the commit so it
+can be checked again. Logs remain at `build-pre-commit/last-run.log`; the final
+80 lines are shown on failure. Empty commits skip the checks. Interrupted hooks
+may leave `build-pre-commit/lock`; remove the empty lock directory only after
+confirming no check is still running. This cache is disposable.
+
+Local checks cover the current host, not both operating systems from the GitHub
+matrix. In particular, macOS checks cannot exercise Linux epoll. The Actions
+workflow calls `tools/check.sh` too, so it can be re-enabled later without
+maintaining a second set of build commands. Enabling the local hook does not
+change repository settings on GitHub or enable Actions.
+
+Prerequisites are Git, a POSIX shell, CMake/CTest, a C11 compiler, SQLite headers
+for the full/quick modes, a compiler supporting ThreadSanitizer, and Clang with
+libFuzzer for full mode. Apple's default Clang may lack libFuzzer. The script
+probes Clang and the usual Homebrew LLVM paths, or accepts an explicit compiler:
+
+```sh
+CAPI_FUZZ_CC=/opt/homebrew/opt/llvm/bin/clang make check
+./tools/check.sh sanitize                  # run one phase
+CAPI_CHECK_JOBS=4 ./tools/check.sh quick    # default parallelism is 2
+```
+
+`CAPI_CHECK_CC` (or `CC`) selects the ordinary compiler, `CAPI_TSAN_CC` selects
+the ThreadSanitizer compiler, and `CAPI_FUZZ_CC` selects the libFuzzer compiler.
+Pass a single executable name/path, not shell flags. Missing tools fail clearly;
+checks are never silently skipped. `CAPI_FUZZ_SECONDS` adjusts each fuzz budget
+(default 30). Direct script runs use `build-check` unless
+`CAPI_CHECK_BUILD_ROOT` selects another build directory. Run checks outside a
+restrictive sandbox if it prohibits the tests' ephemeral loopback sockets.
+
+## Tests and review
+
 Add behavioral tests for routing, HTTP framing, lifecycle, and memory-safety
 changes. Socket tests use only ephemeral loopback ports. Treat malformed traffic
 as expected input and preserve strict, unambiguous framing.

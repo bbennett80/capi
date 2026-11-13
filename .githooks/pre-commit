@@ -1,0 +1,52 @@
+#!/bin/sh
+# Validate the index, including partial staging, without touching source files.
+set -eu
+capi_repo=$(git rev-parse --show-toplevel)
+cd "$capi_repo"
+if git diff --cached --quiet --exit-code; then exit 0; fi
+capi_mode=${CAPI_CHECK_MODE:-$(git config --get capi.preCommitMode || printf full)}
+case "$capi_mode" in full|quick) :;; *) echo 'capi: pre-commit mode must be full or quick' >&2; exit 1;; esac
+capi_cache="$capi_repo/build-pre-commit"
+if [ -L "$capi_cache" ] || { [ -e "$capi_cache" ] && [ ! -f "$capi_cache/.capi-hook-cache" ]; }; then
+    printf 'capi: refusing to replace unrecognized hook cache: %s\n' "$capi_cache" >&2; exit 1
+fi
+mkdir -p "$capi_cache"
+: > "$capi_cache/.capi-hook-cache"
+if ! mkdir "$capi_cache/lock" 2>/dev/null; then
+    printf 'capi: another hook is running. If interrupted, remove %s/lock after checking it stopped.\n' "$capi_cache" >&2
+    exit 1
+fi
+capi_temporary=
+cleanup() {
+    if [ -n "$capi_temporary" ]; then rm -rf "$capi_temporary"; fi
+    rmdir "$capi_cache/lock" 2>/dev/null || :
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+capi_tree=$(git write-tree)
+capi_temporary=$(mktemp -d "$capi_cache/export.XXXXXX")
+mkdir "$capi_temporary/source"
+# Freeze a separate index so IDE staging during a check cannot change the export.
+GIT_INDEX_FILE="$capi_temporary/index" git read-tree "$capi_tree"
+GIT_INDEX_FILE="$capi_temporary/index" git checkout-index --all --prefix="$capi_temporary/source/"
+rm -rf "$capi_cache/source"
+mv "$capi_temporary/source" "$capi_cache/source"
+if [ ! -x "$capi_cache/source/tools/check.sh" ]; then
+    echo 'capi: tools/check.sh must be staged and executable before using this hook' >&2; exit 1
+fi
+printf 'capi: checking staged files (%s); full output: %s/last-run.log\n' "$capi_mode" "$capi_cache" >&2
+if ! (
+    # git commit -a can export a private GIT_INDEX_FILE. Checks that create test
+    # repositories must not inherit that index or other repository-local state.
+    for capi_git_variable in $(git rev-parse --local-env-vars); do unset "$capi_git_variable"; done
+    CAPI_CHECK_BUILD_ROOT="$capi_cache/build" "$capi_cache/source/tools/check.sh" "$capi_mode"
+) > "$capi_cache/last-run.log" 2>&1; then
+    tail -n 80 "$capi_cache/last-run.log" >&2
+    printf '\ncapi: commit blocked by failed staged checks. Full log: %s/last-run.log\n' "$capi_cache" >&2
+    exit 1
+fi
+if [ "$(git write-tree)" != "$capi_tree" ]; then
+    echo 'capi: staged files changed while checks ran; retry the commit to check the new index' >&2; exit 1
+fi
+printf 'capi: staged %s checks passed.\n' "$capi_mode" >&2

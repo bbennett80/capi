@@ -1,4 +1,4 @@
-.PHONY: all test sanitize poll extras workers thread-sanitize bench clean
+.PHONY: all test sanitize poll extras workers thread-sanitize bench clean check check-quick hooks
 BUILD ?= build
 CMAKE_ARGS ?=
 
@@ -8,6 +8,15 @@ all:
 
 test: all
 	ctest --test-dir $(BUILD) --output-on-failure
+
+check:
+	./tools/check.sh full
+
+check-quick:
+	./tools/check.sh quick
+
+hooks:
+	./tools/install-hooks.sh
 
 sanitize:
 	cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DCAPI_SANITIZE=ON $(CMAKE_ARGS)

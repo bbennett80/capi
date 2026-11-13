@@ -124,6 +124,13 @@ endif()
 
 if(CAPI_BUILD_TESTS)
   enable_testing()
+  if(CAPI_BUILD_TOOLS)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+      add_test(NAME git_hooks COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/hooks.sh")
+      set_tests_properties(git_hooks PROPERTIES TIMEOUT 30)
+    endif()
+  endif()
   if(CAPI_BUILD_TOOLS AND CAPI_WITH_SQLITE)
     add_test(NAME cli COMMAND ${CMAKE_COMMAND}
       "-DCLI=$<TARGET_FILE:capi_cli>" "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
