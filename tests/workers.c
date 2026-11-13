@@ -176,6 +176,13 @@ static void constructors_and_dispatch(void) {
     capi_workers_free(f.pool); CHECK(atomic_load(&f.disposed) == 2); capi_app_free(app);
 }
 
+static void router_context(capi_ctx *ctx) {
+    fixture *f = capi_data(ctx);
+    CHECK(pthread_equal(pthread_self(), f->loop));
+    capi_set_header(ctx, "X-Router", "workers");
+    capi_next(ctx);
+    CHECK(capi_data(ctx) == f);
+}
 static uint16_t start_server(bool stress) {
     int startup[2]; CHECK(pipe(startup) == 0);
     child = fork(); CHECK(child >= 0);
@@ -187,7 +194,11 @@ static uint16_t start_server(bool stress) {
         capi_app *app = capi_app_new(); CHECK(app);
         capi_on_error(app, request_error, &f); capi_on_finish(app, request_finished, &f);
         const char *routes[] = {"/quick", "/hold", "/cooperate", "/fail", "/retire"};
-        for (size_t i = 0; i < 5; ++i) CHECK(capi_route(app, CAPI_POST, routes[i], submit, &f) == 0);
+        capi_router *jobs = capi_router_new(); CHECK(jobs);
+        CHECK(capi_router_use(jobs, router_context, &f) == 0);
+        for (size_t i = 0; i < 5; ++i) CHECK(capi_router_route(jobs, CAPI_POST, routes[i], submit, &f) == 0);
+        CHECK(capi_include_router(app, "", jobs) == 0);
+        capi_router_free(jobs);
         CHECK(capi_route(app, CAPI_GET, "/health", health, &f) == 0);
         CHECK(capi_route(app, CAPI_GET, "/release", release_work, &f) == 0);
         CHECK(capi_route(app, CAPI_GET, "/reset", reset, &f) == 0);

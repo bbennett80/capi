@@ -1,5 +1,8 @@
 # API guide
 
+Reusable route groups are covered in the [router guide](routers.md), including
+nested prefixes, scoped middleware, snapshots, and atomic inclusion.
+
 The core public API lives in [`include/capi.h`](../include/capi.h).
 Include this header and link `capi::capi` or `-lcapi`.
 Optional [SQLite](sqlite.md), [template](templates.md), and [worker](workers.md) libraries have separate

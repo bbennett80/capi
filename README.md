@@ -106,6 +106,13 @@ can share per-request application state through `capi_set_state` / `capi_state`.
 All registration calls return `0` on success, `-1` on failure; inspect
 `capi_app_error(app)` for the reason. Check registration errors during setup.
 
+For larger applications, define reusable modules with `capi_router_new`,
+`capi_router_route`, and `capi_router_use`, then include them with
+`capi_include_router(app, "/api/v1", router)`. Routers support nested groups,
+shared middleware, and reuse under multiple prefixes. Inclusion copies a
+snapshot atomically, so builders can be freed afterward. See the
+[router guide](docs/routers.md) and [multi-file example](examples/routers/README.md).
+
 The [API example](examples/api.c) includes request IDs, structured errors,
 query decoding, a byte-preserving echo endpoint, and illustrative bearer auth:
 
@@ -300,6 +307,7 @@ are buffered, with configurable limits. The API has not yet had an independent
 security audit or a compatibility-stable release.
 
 - [API and ownership guide](docs/api.md)
+- [Reusable routers and route modules](docs/routers.md)
 - [HTTP behavior and operational model](docs/http.md)
 - [Errors, request reports, and safer APIs](docs/reliability.md)
 - [Performance and benchmarking](docs/performance.md)

@@ -48,7 +48,10 @@ int main(void) {
     capi_app *app = capi_app_new();
     if (!app) return 1;
     capi_on_finish(app, observed, NULL);
-    if (capi_route(app, CAPI_GET, "/", hello, data)) return 1;
+    capi_router *router = capi_router_new();
+    if (!router || capi_router_route(router, CAPI_GET, "", hello, data) ||
+        capi_include_router(app, "", router)) return 1;
+    capi_router_free(router); /* the installed library owns its route snapshot */
     const char request[] = "GET /?n=7 HTTP/1.1\r\nHost: test\r\n\r\n";
     capi_result result;
     int rc = capi_dispatch(app, request, sizeof(request) - 1, &result);

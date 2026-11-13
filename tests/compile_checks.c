@@ -22,6 +22,8 @@ void compile_check(capi_app *app, capi_ctx *ctx) {
 #elif CHECK_CASE == 5
     capi_async *advanced_type_must_require_its_header = NULL;
     (void)advanced_type_must_require_its_header;
+#elif CHECK_CASE == 6
+    capi_include_router(app, "/api", NULL);
 #else
     if (capi_route(app, CAPI_GET, "/", handler, NULL)) return;
     capi_printf(ctx, "%d %s", 42, "checked");

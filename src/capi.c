@@ -80,6 +80,7 @@ capi_app *capi_app_new(void) {
 static void free_route(cp_route *r) {
     if (!r) return;
     for (size_t i = 0; i < r->nparams; ++i) free(r->names[i]);
+    free(r->middleware);
     free(r);
 }
 
@@ -102,6 +103,55 @@ void capi_app_free(capi_app *app) {
     free(app);
 }
 
+/* Setup-only copy used to make group inclusion transactional. */
+static cp_route *clone_route(const cp_route *source) {
+    cp_route *copy = calloc(1, sizeof(*copy));
+    if (!copy) return NULL;
+    copy->handler = source->handler; copy->data = source->data;
+    copy->nparams = source->nparams;
+    for (size_t i = 0; i < source->nparams; ++i) {
+        copy->names[i] = copystr(source->names[i], strlen(source->names[i]));
+        if (!copy->names[i]) goto fail;
+    }
+    if (source->nmiddleware) {
+        copy->middleware = malloc(source->nmiddleware * sizeof(*copy->middleware));
+        if (!copy->middleware) goto fail;
+        memcpy(copy->middleware, source->middleware, source->nmiddleware * sizeof(*copy->middleware));
+        copy->nmiddleware = source->nmiddleware;
+    }
+    return copy;
+fail:
+    free_route(copy); return NULL;
+}
+static int clone_node(cp_node *copy, const cp_node *source) {
+    if (source->literal) {
+        copy->literal = copystr(source->literal, strlen(source->literal));
+        if (!copy->literal) return -1;
+    }
+    for (size_t i = 0; i <= CAPI_ANY; ++i) if (source->routes[i]) {
+        copy->routes[i] = clone_route(source->routes[i]);
+        if (!copy->routes[i]) return -1;
+    }
+    const cp_node *branches[] = {source->param, source->wildcard};
+    cp_node **slots[] = {&copy->param, &copy->wildcard};
+    for (size_t i = 0; i < 2; ++i) if (branches[i]) {
+        *slots[i] = calloc(1, sizeof(**slots[i]));
+        if (!*slots[i] || clone_node(*slots[i], branches[i])) return -1;
+    }
+    cp_node **slot = &copy->children;
+    for (const cp_node *child = source->children; child; child = child->sibling) {
+        *slot = calloc(1, sizeof(**slot));
+        if (!*slot || clone_node(*slot, child)) return -1;
+        slot = &(*slot)->sibling;
+    }
+    return 0;
+}
+capi_app *cp_clone_app_routes(const capi_app *app) {
+    capi_app *copy = capi_app_new();
+    if (copy && clone_node(&copy->root, &app->root)) { capi_app_free(copy); return NULL; }
+    return copy;
+}
+
 static int app_error(capi_app *app, const char *message) {
     if (app) snprintf(app->error, sizeof(app->error), "%s", message);
     return -1;
@@ -121,6 +171,10 @@ int capi_app_limits(capi_app *app, capi_limits limits) {
 }
 
 int capi_route(capi_app *app, capi_method method, const char *path, capi_handler handler, void *data) {
+    return cp_route_register(app, method, path, handler, data, NULL, 0);
+}
+int cp_route_register(capi_app *app, capi_method method, const char *path, capi_handler handler,
+                      void *data, const cp_binding *middleware, size_t nmiddleware) {
     if (!app) return -1;
     if (!path || path[0] != '/' || !handler || method < CAPI_GET || method > CAPI_ANY)
         return app_error(app, "route requires a method, absolute path, and handler");
@@ -129,6 +183,12 @@ int capi_route(capi_app *app, capi_method method, const char *path, capi_handler
     if (!route) return app_error(app, "out of memory");
     route->handler = handler;
     route->data = data;
+    if (nmiddleware) {
+        route->middleware = malloc(nmiddleware * sizeof(*route->middleware));
+        if (!route->middleware) goto nomem;
+        memcpy(route->middleware, middleware, nmiddleware * sizeof(*route->middleware));
+        route->nmiddleware = nmiddleware;
+    }
     /* Validate the entire pattern before mutating the trie. */
     size_t segments = 0;
     for (const char *p = path + 1; *p;) {
@@ -422,6 +482,11 @@ static void advance(capi_ctx *ctx) {
         return;
     }
     if (ctx->terminal_called) return;
+    if (ctx->route && ctx->next_route_middleware < ctx->route->nmiddleware) {
+        cp_binding *m = &ctx->route->middleware[ctx->next_route_middleware++];
+        invoke(ctx, m->handler, m->data);
+        return;
+    }
     ctx->terminal_called = true;
     if (ctx->route) { invoke(ctx, ctx->route->handler, ctx->route->data); return; }
     if (ctx->matched) {

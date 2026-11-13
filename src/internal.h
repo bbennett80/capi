@@ -7,6 +7,7 @@
 
 typedef struct { char *data; size_t len, cap; } cp_buf;
 typedef struct { capi_str name, value; } cp_header;
+typedef struct { capi_handler handler; void *data; } cp_binding;
 typedef struct cp_cleanup {
     capi_cleanup_fn fn;
     void *data;
@@ -23,6 +24,8 @@ typedef struct cp_route {
     void *data;
     char *names[CAPI_MAX_PARAMS];
     size_t nparams;
+    cp_binding *middleware;
+    size_t nmiddleware;
 } cp_route;
 typedef struct cp_node {
     char *literal;
@@ -64,6 +67,7 @@ struct capi_ctx {
     cp_cleanup *cleanup;
     void *data, *state;
     size_t next_middleware;
+    size_t next_route_middleware;
     unsigned depth;
     int status;
     bool failed, close, http10, terminal_called;
@@ -95,4 +99,7 @@ void cp_fail(capi_ctx *ctx, capi_error_code code, const char *operation, int sys
 void cp_request_identify(capi_ctx *ctx);
 void cp_request_observe(capi_ctx *ctx, capi_outcome outcome, size_t sent, size_t response_bytes);
 uint64_t cp_now_ms(void);
+capi_app *cp_clone_app_routes(const capi_app *app);
+int cp_route_register(capi_app *app, capi_method method, const char *path, capi_handler handler,
+                      void *data, const cp_binding *middleware, size_t nmiddleware);
 #endif

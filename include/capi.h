@@ -23,6 +23,7 @@ extern "C" {
 #endif
 
 typedef struct capi_app capi_app;
+typedef struct capi_router capi_router;
 typedef struct capi_ctx capi_ctx;
 typedef struct capi_server capi_server;
 typedef struct { const char *data; size_t len; } capi_str;
@@ -50,6 +51,25 @@ CAPI_NODISCARD int capi_route(capi_app *app, capi_method method, const char *pat
 CAPI_NODISCARD int capi_use(capi_app *app, const char *prefix, capi_handler middleware, void *data);
 void capi_not_found(capi_app *app, capi_handler handler, void *data);
 const char *capi_app_error(const capi_app *app);
+
+/* Reusable route groups. Configure before dispatch/listen; 0 succeeds, -1 fails.
+ * Includes copy a snapshot, including nested routes and middleware. Builders
+ * may then be changed/freed. Handler data is borrowed and must outlive requests.
+ * Inclusion is atomic: conflicts, bad paths, or allocation failures add nothing. */
+CAPI_NODISCARD capi_router *capi_router_new(void);
+void capi_router_free(capi_router *router);
+const char *capi_router_error(const capi_router *router);
+/* Empty path matches the mount prefix itself; "/" adds a trailing slash. */
+CAPI_NODISCARD int capi_router_route(capi_router *router, capi_method method, const char *path,
+                                   capi_handler handler, void *data);
+/* Shared middleware for this group's matched endpoints, in registration order.
+ * App middleware runs first, then outer router groups, then inner groups.
+ * Does not run for unrelated routes, 404s, or automatic 405/OPTIONS responses. */
+CAPI_NODISCARD int capi_router_use(capi_router *router, capi_handler middleware, void *data);
+/* Prefix: "" or "/" means root; otherwise absolute, without trailing slash
+ * or catch-all. :parameters are supported. capi_path remains the full path. */
+CAPI_NODISCARD int capi_router_include(capi_router *parent, const char *prefix, const capi_router *child);
+CAPI_NODISCARD int capi_include_router(capi_app *app, const char *prefix, const capi_router *router);
 
 typedef enum {
     CAPI_ERROR_NONE, CAPI_ERROR_APPLICATION, CAPI_ERROR_ARGUMENT,

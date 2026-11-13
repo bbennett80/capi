@@ -13,7 +13,7 @@ execute_process(COMMAND "${CC}" ${args} -DCHECK_CASE=0 "${SOURCE_DIR}/tests/comp
 if(NOT result EQUAL 0)
   message(FATAL_ERROR "Valid API usage failed to compile: ${diagnostics}")
 endif()
-set(cases 1 2 5)
+set(cases 1 2 5 6)
 if(WORKERS)
   list(APPEND cases 3)
 endif()

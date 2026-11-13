@@ -106,6 +106,13 @@ contract tests verify valid usage and expected compile failures. Allocation
 fault tests compile a separate private core with libc allocation names replaced
 by test wrappers; no fault-injection API or allocator indirection ships in capi.
 
+The `routers` suite covers nested snapshots, repeated prefixes, slash and
+parameter semantics, middleware isolation, and rollback on conflicts. Allocation
+fault tests fail each allocation during app/router inclusion and verify that
+existing endpoints stay usable. Worker integration tests include their job
+routes through a router and free the builder before serving, exercising async
+handler-data and cancellation lifetimes with copied middleware bindings.
+
 For fuzzing, use a Clang distribution that includes libFuzzer (Apple's Command
 Line Tools compiler may not). LLVM Clang works on macOS; Linux Clang works in CI.
 
@@ -123,7 +130,7 @@ printf '{{#items}}<p>{{name}}</p>{{/items}}{{>card}}' > build-fuzz/template-corp
 ```
 
 The HTTP harness runs the complete in-memory dispatch path, including decoded
-query/form values and JSON escaping. The template harness compiles arbitrary
+query/form values, included-router middleware, and JSON escaping. The template harness compiles arbitrary
 sources and renders successful compilations with sections, lists, escaped values,
 and recursive partials. Minimize crashes and add the input as a regression
 test. Do not commit generated fuzz corpora or build products.
