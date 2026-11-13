@@ -1,5 +1,9 @@
 # Compiled HTML templates
 
+For a complete browser app, the [todo walkthrough](../examples/todo/README.md)
+shows HTML forms, a template model built in C, local CSS, optional CDN styling,
+and CLI-generated SQLite actions working together.
+
 `capi::templates` is a small C11 library with no external dependencies. It uses
 a Mustache-inspired syntax and typed C data. Templates compile once at startup
 into immutable operations; rendering does no filesystem access or template

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Little list — capi todo</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Little list home"><span class="brand-mark" aria-hidden="true">✓</span> little list<span class="brand-dot">.</span></a>
+        <span class="local-badge"><span aria-hidden="true">●</span> A little space of your own</span>
+      </header>
+
+      <main>
+        <div class="intro">
+          <p class="eyebrow">ONE THING AT A TIME</p>
+          <h1>Today, a little clearer.</h1>
+          <p>A place for the things on your mind. Write them down. Make a little progress.</p>
+        </div>
+
+        <div class="workspace">
+          <section class="list-card" aria-label="Your todo list">
+            <form class="add-form" method="post" action="/ui/todos">
+              <label for="new-title">What needs doing?</label>
+              <div class="add-controls">
+                <input id="new-title" name="title" type="text" placeholder="e.g. Make time for a walk" required maxlength="255" autocomplete="off" aria-describedby="title-hint">
+                <input type="hidden" name="completed" value="false">
+                <input type="hidden" name="filter" value="all">
+                <button class="primary" type="submit"><span aria-hidden="true">+</span> Add task</button>
+              </div>
+              <p class="input-hint" id="title-hint">One small thing is a good place to start.</p>
+            </form>
+
+            {{#error}}<div class="error" role="alert">{{error}}</div>{{/error}}
+
+            <div class="list-toolbar">
+              <nav class="filters" aria-label="Filter tasks">
+                <a href="/?filter=all" {{#all_filter}}class="selected" aria-current="page"{{/all_filter}}>All <span>{{total}}</span></a>
+                <a href="/?filter=active" {{#active_filter}}class="selected" aria-current="page"{{/active_filter}}>Active <span>{{active}}</span></a>
+                <a href="/?filter=completed" {{#completed_filter}}class="selected" aria-current="page"{{/completed_filter}}>Completed <span>{{done}}</span></a>
+              </nav>
+              <span class="sort-label">NEWEST FIRST</span>
+            </div>
+
+            <ul class="tasks">
+              {{#todos}}
+              <li class="task {{#completed}}is-complete{{/completed}}">
+                <form class="toggle-form" method="post" action="/ui/todos/{{id}}/update">
+                  <input type="hidden" name="filter" value="{{filter}}">
+                  <button class="toggle" type="submit" name="completed" value="{{#completed}}false{{/completed}}{{^completed}}true{{/completed}}" aria-label="{{#completed}}Mark active:{{/completed}}{{^completed}}Complete:{{/completed}} {{title}}"><span aria-hidden="true">{{#completed}}✓{{/completed}}</span></button>
+                </form>
+                <div class="task-body">
+                  <p class="task-title">{{title}}</p>
+                  <details class="edit-task">
+                    <summary>Edit title</summary>
+                    <form class="edit-form" method="post" action="/ui/todos/{{id}}/update">
+                      <label class="sr-only" for="title-{{id}}">New title for {{title}}</label>
+                      <input id="title-{{id}}" name="title" value="{{title}}" required maxlength="255" autocomplete="off">
+                      <input type="hidden" name="filter" value="{{filter}}">
+                      <button class="save" type="submit">Save</button>
+                    </form>
+                  </details>
+                </div>
+                <form class="delete-form" method="post" action="/ui/todos/{{id}}/delete">
+                  <input type="hidden" name="filter" value="{{filter}}">
+                  <button class="delete" type="submit" aria-label="Delete: {{title}}" title="Delete task"><span aria-hidden="true">×</span></button>
+                </form>
+              </li>
+              {{/todos}}
+            </ul>
+
+            {{^todos}}
+            <div class="empty-state">
+              <div class="empty-mark" aria-hidden="true">✓</div>
+              <h2>{{empty_title}}</h2>
+              <p>{{empty_text}}</p>
+            </div>
+            {{/todos}}
+            {{#has_more}}<p class="limit-note">Showing the newest 100 tasks in this view.</p>{{/has_more}}
+
+            <div class="list-footer"><span><strong>{{active}}</strong> left to do</span><span>Small steps count.</span></div>
+          </section>
+
+          <aside class="sidebar" aria-label="Your progress">
+            <section class="progress-card">
+              <p class="eyebrow">A LITTLE MOMENTUM</p>
+              <div class="progress-number">{{progress}}<span>%</span></div>
+              <label class="sr-only" for="task-progress">Tasks completed</label>
+              <progress id="task-progress" value="{{progress}}" max="100">{{progress}}%</progress>
+              <p><strong>{{done}} of {{total}}</strong> tasks complete</p>
+              <div class="progress-bottom"><span class="small-check" aria-hidden="true">✓</span> Every check is a small win.</div>
+            </section>
+            <section class="gentle-note">
+              <span class="note-spark" aria-hidden="true">✳</span>
+              <h2>Make space, not pressure.</h2>
+              <p>This list is here to help you breathe a little easier. It doesn't all have to happen today.</p>
+            </section>
+            <p class="storage-note"><span aria-hidden="true">●</span> Your tasks are saved locally.</p>
+          </aside>
+        </div>
+      </main>
+      <footer class="page-footer"><span>A quieter kind of productivity.</span><span>Made with <a href="https://github.com/bbennett80/capi">capi</a> · Just C.</span></footer>
+    </div>
+  </body>
+</html>

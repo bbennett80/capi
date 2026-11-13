@@ -14,3 +14,6 @@
 /messages.db
 /messages.db-wal
 /messages.db-shm
+/app.db
+/app.db-wal
+/app.db-shm
